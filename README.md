@@ -1,4 +1,4 @@
-# DWNAPP
+# MSL_Downloader
 
 Streamlit app for building, browsing, filtering, and downloading MSL (Curiosity) image products with a parser-first workflow and optional LLM fallback.
 
