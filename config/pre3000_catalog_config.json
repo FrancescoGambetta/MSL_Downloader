@@ -1,0 +1,136 @@
+{
+  "base_url": "https://planetarydata.jpl.nasa.gov/img/data/msl/",
+  "coord_url": "https://planetarydata.jpl.nasa.gov/w10n/msl/msl_places/data_localizations/localized_interp_demv2.csv",
+  "coord_local_path": "data/reference/geo/localized_interp_demv2.csv",
+  "coord_parquet_path": "data/reference/geo/localized_interp_demv2.parquet",
+  "output": "data/catalog/catalog_pre3000.json",
+  "parquet_output": "data/catalog/catalog_pre3000.parquet",
+  "checkpoint_every_products": 2000,
+  "checkpoint_write_parquet": false,
+  "workers": 12,
+  "min_img_size_bytes_for_lbl": 51200,
+  "sol_start": null,
+  "sol_end": 1500,
+  "timeout": 30,
+  "retries": 3,
+  "default_cameras": [
+    "mastcam",
+    "mahli",
+    "mardi"
+  ],
+  "camera_config": {
+    "mastcam": {
+      "collection_token": "MSLMST_",
+      "data_roots": [
+        "DATA/RDR/SURFACE/"
+      ]
+    },
+    "mahli": {
+      "collection_token": "MSLMHL_",
+      "data_roots": [
+        "DATA/RDR/SURFACE/"
+      ]
+    },
+    "navcam": {
+      "collection_token": "MSLNAV_",
+      "data_roots": [
+        "DATA/",
+        "DATA_V1/"
+      ]
+    },
+    "mardi": {
+      "collection_token": "MSLMRD",
+      "data_roots": [
+        "DATA/RDR/SURFACE/"
+      ]
+    },
+    "hazcam": {
+      "collection_token": "MSLHAZ_",
+      "data_roots": [
+        "DATA/"
+      ]
+    }
+  },
+  "selection_rules": {
+    "raw_global_rules": {
+      "drop_filename_contains_any": [
+        "THUMBNAIL"
+      ]
+    },
+    "mastcam": {
+      "filter_key": "pre3000_mastcam_only_e01",
+      "rules": {
+        "pds": {
+          "suffix_equals_any": [
+            "DRCL"
+          ],
+          "filename_contains_any": [
+            "E01",
+            "E1_"
+          ],
+          "min_img_size_bytes": 102400
+        }
+      }
+    },
+    "mahli": {
+      "filter_key": "pre3000_mahli_only_drcl",
+      "rules": {
+        "pds": {
+          "suffix_equals_any": [
+            "DRCL"
+          ]
+        }
+      }
+    },
+    "mardi": {
+      "filter_key": "pre3000_mardi_only_e01",
+      "rules": {
+        "pds": {
+          "suffix_equals_any": [
+            "DRCL"
+          ],
+          "filename_contains_any": [
+            "E01",
+            "E01_"
+          ],
+          "min_img_size_bytes": 102400
+        }
+      }
+    },
+    "navcam": {
+      "filter_key": "pre3000_navcam_iltlf_mxylf",
+      "rules": {
+        "pds": {
+          "filename_prefix_any": [
+            "NLA_",
+            "NRA_",
+            "NLB_",
+            "NRB_"
+          ],
+          "filename_contains_any": [
+            "ILTLF",
+            "MXYLF",
+            "EDR_F"
+          ],
+          "min_img_size_bytes": 102400
+        }
+      }
+    },
+    "hazcam": {
+      "filter_key": "pre3000_hazcam_iltf_mxylf",
+      "rules": {
+        "pds": {
+          "filename_prefix_any": [
+            "FLB_",
+            "RLB_"
+          ],
+          "filename_contains_any": [
+            "ILT_F",
+            "MXYLF"
+          ],
+          "min_img_size_bytes": 102400
+        }
+      }
+    }
+  }
+}

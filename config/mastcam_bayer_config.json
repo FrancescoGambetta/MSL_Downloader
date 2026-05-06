@@ -1,0 +1,15 @@
+{
+  "best_pattern": "BGGR",
+  "final_sigma": 0.16,
+  "wb_strength": 0.1,
+  "flat_threshold": 6.0,
+  "chroma_sigma": 1.8,
+  "chroma_blend": 0.94,
+  "color_replace_sigma": 6.0,
+  "green_neutralize": 0.45,
+  "clahe_clip": 1.0,
+  "clahe_grid": [8, 8],
+  "gamma": 1.0,
+  "debayer_profile": "ea",
+  "superpixel_upscale": true
+}

@@ -1,0 +1,10 @@
+{
+  "catalog_2_raw_api": {
+    "description": "Raw archive source via JPL/NASA raw_image_items API.",
+    "base_url": "https://mars.nasa.gov/api/v1/raw_image_items/"
+  },
+  "catalog_3_raw_manifest": {
+    "description": "Raw archive source via manifest endpoint (image_manifest + per-sol catalogs).",
+    "manifest_url": "http://mars.jpl.nasa.gov/msl-raw-images/image/image_manifest.json"
+  }
+}

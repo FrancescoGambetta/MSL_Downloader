@@ -1,0 +1,276 @@
+{
+  "intents": {
+    "help": {
+      "contains_any": [
+        "aiutami",
+        "spiegami come funzioni",
+        "spiegami come funziona",
+        "dimmi cosa sai fare",
+        "dimmi come ti posso usare",
+        "dimmi cosa posso fare",
+        "cosa puoi fare",
+        "help",
+        "what can you do",
+        "how can i use you",
+        "how do you work",
+        "aide",
+        "que peux tu faire",
+        "como puedo usarte",
+        "que puedes hacer",
+        "hilf mir",
+        "was kannst du",
+        "wie kann ich dich nutzen",
+        "aide moi",
+        "que peux-tu faire",
+        "que puedes hacer",
+        "ayudame",
+        "was kannst du tun"
+      ]
+    },
+    "filter_examples": {
+      "contains_any": [
+        "example of filtering",
+        "examples of filtering",
+        "example prompt",
+        "example of prompt",
+        "esempio filtro",
+        "esempio di filtro",
+        "esempio prompt",
+        "esempi prompt",
+        "example filtering prompt",
+        "filtering prompt example",
+        "exemples de prompt",
+        "exemple de filtre",
+        "ejemplos de prompts",
+        "beispiel prompts"
+      ]
+    },
+    "size_counts": {
+      "contains": [
+        "quante immagini",
+        "quanti record",
+        "how many images",
+        "how many records"
+      ],
+      "requires_any": [
+        "dimensione",
+        "size"
+      ]
+    },
+    "schema": {
+      "contains_any": ["schema", "colonne", "columns", "colonnes", "columnas", "spalten"]
+    },
+    "contains": {
+      "contains_any": ["cosa contiene", "composizione", "what contains"]
+    },
+    "report": {
+      "contains_any": ["report", "overview", "riepilogo", "resume", "rapport", "resumen", "uberblick"]
+    },
+    "camera_types": {
+      "contains_any": [
+        "tipi camere disponibili",
+        "lista camere disponibili",
+        "elenco camere disponibili",
+        "quali camere ci sono",
+        "camera disponibili",
+        "available camera types",
+        "list available cameras",
+        "camera types available"
+      ],
+      "requires_all_any": [
+        [
+          "camera",
+          "cameras",
+          "camere",
+          "camara",
+          "camaras",
+          "kamera",
+          "kameras",
+          "instrument",
+          "instruments"
+        ],
+        [
+          "list",
+          "lista",
+          "elenco",
+          "show",
+          "mostra",
+          "display",
+          "possible",
+          "possibili",
+          "available",
+          "disponibili",
+          "types",
+          "tipi",
+          "what",
+          "which",
+          "quali"
+        ]
+      ]
+    },
+    "min_size": {
+      "contains_any": ["dimensione minima", "min size", "min_img_size", "taille minimale", "minimum size"]
+    },
+    "only_with_lbl": {
+      "contains_any": ["solo con lbl", "only with lbl", "seulement avec lbl", "avec lbl"]
+    },
+    "dr_variants": {
+      "contains_any": ["varianti dr", "dr variants", "drcl", "drcx", "drlx", "drxx", "drlc"]
+    },
+    "name_tokens": {
+      "contains_any": ["token", "indicatore", "name token"]
+    },
+    "navcam_token": {
+      "contains_any": ["solo navcam indicatori", "navcam token"]
+    },
+    "hazcam_token": {
+      "contains_any": ["solo hazcam indicatori", "hazcam token"]
+    },
+    "reset_filters": {
+      "contains_any": ["reset filtri", "reset filters", "reinitialise les filtres", "reset des filtres"]
+    },
+    "show_filters": {
+      "contains_any": ["mostra filtri", "show filters", "montre les filtres", "affiche les filtres", "mostrar filtros", "zeige filter"]
+    },
+    "selection_report": {
+      "contains_any": ["report selezione", "selection report", "rapport selection", "rapport de selection", "reporte seleccion", "auswahl bericht"]
+    },
+    "selection_list": {
+      "contains_any": [
+        "lista selezione",
+        "elenco selezione",
+        "mostra selezione",
+        "elenco completo selezione",
+        "mostra elenco selezione",
+        "list selection",
+        "show selection list",
+        "show full selection",
+        "full selection list",
+        "liste selection",
+        "affiche la selection",
+        "liste complete selection",
+        "lista seleccion",
+        "mostrar seleccion",
+        "lista completa seleccion",
+        "auswahl liste",
+        "zeige auswahl",
+        "vollstandige auswahlliste"
+      ]
+    },
+    "choose_path": {
+      "contains_any": ["scegli path", "choose path", "select folder", "choisir dossier", "selectionner dossier", "set download folder", "imposta cartella download", "imposta la cartella di download", "seleccionar carpeta", "ordner auswahlen"]
+    },
+    "set_download_path": {
+      "contains_any": ["path download", "download path", "chemin de telechargement", "ruta descarga", "download pfad"]
+    },
+    "show_download_path": {
+      "contains_any": [
+        "show download path",
+        "mostra path download",
+        "mostra cartella download",
+        "show output folder",
+        "montre le chemin de telechargement",
+        "mostrar ruta descarga",
+        "zeige download pfad"
+      ]
+    },
+    "download_and_process": {
+      "contains_any": [
+        "scarica e elabora",
+        "scarica ed elabora",
+        "scarica e converti",
+        "download and convert",
+        "download and process",
+        "combinazione",
+        "telecharge et convertis",
+        "telecharge et traite"
+      ]
+    },
+    "download_selection": {
+      "contains_any": ["scarica", "download", "telecharge", "telecharger"]
+    },
+    "process_selection": {
+      "contains_any": ["elabora", "processa", "process", "convert", "converti", "conversione", "get", "fetch", "recupera", "prendi", "traite", "traiter", "convertis"]
+    },
+    "tag_selection": {
+      "contains_any": ["tagga selezione", "tag selection", "queue download"]
+    },
+    "catalog_update_help": {
+      "contains_any": [
+        "catalog update help",
+        "help catalog update",
+        "aiuto aggiornamento catalogo",
+        "come aggiorno il catalogo",
+        "make_msl_catalog help"
+      ]
+    },
+    "catalog_update": {
+      "contains_any": [
+        "aggiorna catalogo",
+        "update catalog",
+        "run make_msl_catalog",
+        "esegui make_msl_catalog",
+        "catalog refresh"
+      ]
+    },
+    "geo_status": {
+      "contains_any": [
+        "stato coordinate",
+        "stato geografia",
+        "file coordinate",
+        "coordinate geografiche",
+        "geo status",
+        "geography status",
+        "coord status"
+      ]
+    },
+    "geo_download": {
+      "contains_any": [
+        "scarica coordinate",
+        "aggiorna coordinate",
+        "sync coordinate",
+        "download coordinates",
+        "update geography csv",
+        "sync geography"
+      ]
+    },
+    "config_show": {
+      "contains_any": [
+        "mostra configurazione",
+        "show config",
+        "show configuration",
+        "mostra url config",
+        "configurazione catalogo"
+      ]
+    },
+    "config_set": {
+      "contains_any": [
+        "set config",
+        "imposta config",
+        "setta config",
+        "update config",
+        "config set"
+      ]
+    },
+    "config_dialog": {
+      "contains_any": [
+        "apri dialog config",
+        "open config dialog",
+        "config dialog"
+      ]
+    }
+  },
+  "keywords": {
+    "example": ["example", "examples", "esempio", "esempi"],
+    "prompt": ["prompt", "promt"],
+    "filtering": ["filter", "filtering", "filtro", "filtrare"],
+    "camera": ["camera", "cam"],
+    "all_variants": ["tutte le varianti", "all variants", "in tutte le sue varianti", "tutte varianti"],
+    "dr_family_words": ["varianti dr", "dr variants"],
+    "refresh_sol_index": ["refresh sol index", "refresh-sol-index", "forza reindex sol", "reindex sol"],
+    "checkpoint_write_parquet": ["checkpoint parquet", "checkpoint-write-parquet", "write parquet checkpoint"],
+    "quiet": ["quiet", "silenzioso", "non verboso"],
+    "config_like": ["config", "configuration", "configurazione", "url", "coord_url", "base_url", "output"],
+    "geo_like": ["coordinate", "geografia", "geo", "geographic", "coord"]
+  }
+}

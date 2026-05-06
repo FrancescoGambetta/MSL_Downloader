@@ -1,0 +1,7 @@
+{
+  "coord_url": "https://planetarydata.jpl.nasa.gov/w10n/msl/msl_places/data_localizations/localized_interp_demv2.csv",
+  "local_path": "data/reference/geo/localized_interp_demv2.csv",
+  "remote_content_length": "11465018",
+  "remote_last_modified": "Sun, 15 Mar 2026 07:19:03 GMT",
+  "updated_at_utc": "2026-04-27T09:15:21.163031+00:00"
+}

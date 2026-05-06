@@ -1,0 +1,98 @@
+{
+  "prompt_rules_defaults": {
+    "requested_count_patterns": [
+      "\\b(?:scarica|download|processa|process|converti|convert|organizza|organize)\\s+(?:solo|only\\s+)?(\\d{1,6})\\b",
+      "\\b(\\d{1,6})\\s*(?:immagini|images|image|foto|photos)\\b",
+      "\\b(\\d{1,6})\\s*(?:totali|totale|total|overall|au total|en total)\\b",
+      "\\b(?:totali|totale|total|overall|au total|en total)\\s*[:=]?\\s*(\\d{1,6})\\b",
+      "\\bmax(?:imum)?\\s*[:=]?\\s*(\\d{1,6})\\b",
+      "\\b(\\d{1,6})\\s*(?:random|casuali|aleatoire|aleatoires|aleatorias|zufallig|zufallige)\\b"
+    ],
+    "each_camera_count_patterns": [
+      "\\b(\\d{1,4})\\s*(?:immagini|images|image|foto|photos)?\\s*(?:per|for|pour|por|pro)\\s*(?:ogni|each|chaque|cada|jede)\\s*(?:camera|cameras|camere|camara|kameras?)\\b",
+      "\\b(?:per|for|pour|por|pro)\\s*(?:ogni|each|chaque|cada|jede)\\s*(?:camera|cameras|camere|camara|kameras?)\\s*(\\d{1,4})\\b"
+    ],
+    "random_words": ["random", "casuali", "casuale", "aleatoire", "aleatorias", "zufallig", "zufallige"],
+    "organize_words": ["organize", "organizza", "organiser", "organizar", "organisieren"],
+    "workflow_action_patterns": [
+      "\\bscaric\\w*\\b",
+      "\\bdownload\\w*\\b",
+      "\\bprocess\\w*\\b",
+      "\\bconvert\\w*\\b",
+      "\\borgani(?:zz|s)\\w*\\b",
+      "\\brandom\\b",
+      "\\bcasual\\w*\\b",
+      "\\bsol\\b",
+      "\\b\\d+\\s*(?:kb|mb|gb)\\b",
+      "\\bselezion\\w*\\b",
+      "\\bselect\\w*\\b"
+    ],
+    "normalize_replacements": [
+      ["\\bdl\\b", "download"],
+      ["\\bproc\\b", "process"],
+      ["\\bdb\\b", "database"],
+      ["\\bstp\\b", ""],
+      ["\\bpls\\b", ""],
+      ["\\bplz\\b", ""],
+      ["\\btelecharge(?:r|ment)?\\b", "download"],
+      ["\\btelecharg\\b", "download"],
+      ["\\btraite(?:r|ment)?\\b", "process"],
+      ["\\bconvertis\\b", "convert"],
+      ["\\bconvertir\\b", "convert"],
+      ["\\bmontre\\b", "show"],
+      ["\\baffiche\\b", "show"],
+      ["\\bdossier\\b", "folder"],
+      ["\\bchemin\\b", "path"],
+      ["\\bliste\\b", "list"],
+      ["\\bselectionne(?:r)?\\b", "seleziona"],
+      ["\\bscarca\\b", "scarica"],
+      ["\\bscarcia\\b", "scarica"],
+      ["\\bproccessa\\b", "processa"],
+      ["\\bproccesa\\b", "processa"],
+      ["\\bproccess\\b", "process"],
+      ["\\bcam\\b", "camera"]
+    ],
+    "compact_follow_tokens": ["navcam", "hazcam", "camera", "scarica", "download", "processa", "process", "converti", "convert", "kb", "mb", "gb"],
+    "all_cameras_patterns": [
+      "\\b(?:tutte|tutti|tutto)\\s+le?\\s*camera(?:s)?\\b",
+      "\\ball\\s+(?:the\\s+)?camera(?:s)?\\b",
+      "\\btoutes?\\s+les?\\s+camera(?:s)?\\b",
+      "\\btodas?\\s+las?\\s+camara(?:s)?\\b",
+      "\\balle\\s+kameras?\\b"
+    ],
+    "unsupported_url_tokens": ["image url", "image urls", "url immagini", "url delle immagini", "urls for images", "urls of images"],
+    "unsupported_url_listing_verbs": ["show", "list", "mostra", "elenca", "dammi"],
+    "camera_list_camera_words": ["camera", "cameras", "camere", "camara", "camaras", "kamera", "kameras", "instrument", "instruments"],
+    "camera_list_list_words": ["list", "lista", "elenco", "show", "mostra", "display", "which", "quali", "what", "dammi", "fammi"],
+    "camera_list_action_words": ["scaric", "download", "process", "convert", "organizz", "organize", "selezion", "select", "random", "casual", "sol", "kb", "mb"],
+    "bulk_cancel_words": ["annulla", "cancel", "cancella", "stop", "abort", "abbrechen", "annuler", "cancelar", "arreter"],
+    "bulk_proceed_words": ["procedi", "proceed", "continue", "continua", "ok", "go", "proceder", "procedez", "weiter", "fortfahren"]
+  },
+  "camera_rules_defaults": {
+    "mastcam": {
+      "filter_key": "mastcam_only_drcl",
+      "suffix_equals_any": ["DRCL"]
+    },
+    "mahli": {
+      "filter_key": "mahli_only_drcl",
+      "suffix_equals_any": ["DRCL"]
+    },
+    "mardi": {
+      "filter_key": "mardi_only_e01_drcx",
+      "suffix_equals_any": ["DRCL"],
+      "filename_contains_any": ["E01_", "E00_", "C00_"]
+    },
+    "navcam": {
+      "filter_key": "navcam_only_iltlf",
+      "filename_prefix_any": ["NLB_", "NRB_"],
+      "filename_contains_all": ["ILTLF"],
+      "camera_markers_any": ["NCAM"]
+    },
+    "hazcam": {
+      "filter_key": "hazcam_only_lb_edr",
+      "filename_prefix_any": ["FLB_", "RLB_"],
+      "filename_contains_all": ["ILT_F"],
+      "camera_markers_any": ["FHAZ", "RHAZ"]
+    }
+  }
+}

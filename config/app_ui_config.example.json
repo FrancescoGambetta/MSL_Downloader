@@ -1,0 +1,11 @@
+{
+  "mode": "dark",
+  "theme_dark": "sand",
+  "theme_light": "sage_light",
+  "lang": "en",
+  "download_path": "",
+  "mardi_legacy_mode": true,
+  "mardi_geometric_correction": true,
+  "mardi_geometric_side_by_side": true,
+  "ui_mode": "builder"
+}

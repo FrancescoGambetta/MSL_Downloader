@@ -1,0 +1,10 @@
+{
+  "catalog_parquet": "data/catalog/Catalog_PDS.parquet",
+  "catalog_parquet_raw": "data/catalog/Catalog_RawArch.parquet",
+  "pds_missing_sols": "config/pds_missing_sols.json",
+  "intent_config": "config/intent_config.json",
+  "msl_catalog_config": "config/msl_catalog_config.json",
+  "geo_csv": "data/reference/geo/localized_interp_demv2.csv",
+  "geo_parquet": "data/reference/geo/localized_interp_demv2.parquet",
+  "app_download_default": "APP/downloads"
+}

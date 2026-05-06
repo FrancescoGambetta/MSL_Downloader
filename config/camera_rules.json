@@ -1,0 +1,75 @@
+{
+  "raw_global_rules": {
+    "drop_filename_contains_any": ["THUMBNAIL", "EDR_T"],
+    "reduce_bursts": {
+      "apply_when_filter_key": "raw_reduce_bursts",
+      "keep_per_group_filter_key": "raw_burst_keep_per_group",
+      "default_keep_per_group": 1
+    }
+  },
+  "mastcam": {
+    "notes": "PDS Mastcam keeps DRCL products but allows both C00 and E01 families, which better matches the field datasets while staying narrower than a fully open Mastcam filter.",
+    "filter_key": "mastcam_only_drcl",
+    "rules": {
+      "pds": {
+        "suffix_equals_any": ["DRCL"],
+        "filename_contains_any": ["C00", "E01", "E1_"],
+        "min_img_size_bytes": 102400
+      },
+      "raw": {
+        "apply_when_filter_key": "mastcam_only_drcl",
+        "filename_contains_any": ["E01", "E1_"]
+      }
+    }
+  },
+  "mahli": {
+    "filter_key": "mahli_only_drcl",
+    "rules": {
+      "pds": {
+        "suffix_equals_any": ["DRCL"],
+        "min_img_size_bytes": 102400
+      },
+      "raw": {
+        "apply_when_filter_key": "raw_mahli_legacy_subset",
+        "filename_contains_any": ["C00_", "R0_", "E01_"]
+      }
+    }
+  },
+  "mardi": {
+    "filter_key": "mardi_only_e01_drcx",
+    "rules": {
+      "pds": {
+        "suffix_equals_any": ["DRCL"],
+        "filename_contains_any": ["E01_", "E00_", "C00_"],
+        "min_img_size_bytes": 102400
+      }
+    }
+  },
+  "navcam": {
+    "notes": "Navcam filter focused on mask-compatible products: keep ILTLF images plus their corresponding MXYLF mask products (both NLB_/NRB_).",
+    "filter_key": "navcam_only_iltlf",
+    "camera_markers_any": ["NCAM", "TRAV"],
+    "rules": {
+      "pds": {
+        "filename_prefix_any": ["NLB_", "NRB_"],
+        "filename_contains_all": [],
+        "filename_contains_any": ["ILTLF", "MXYLF"],
+        "min_img_size_bytes": 102400,
+        "min_img_size_exempt_markers_any": ["TRAV"]
+      }
+    }
+  },
+  "hazcam": {
+    "notes": "Hazcam filter focused on mask-compatible products: keep ILT_F images plus their corresponding MXYLF mask products (front/rear, left/right).",
+    "filter_key": "hazcam_only_lb_edr",
+    "camera_markers_any": ["FHAZ", "RHAZ", "TRAV"],
+    "rules": {
+      "pds": {
+        "filename_prefix_any": ["FLB_", "FRB_", "RLB_", "RRB_"],
+        "filename_contains_all": [],
+        "filename_contains_any": ["ILT_F", "MXYLF"],
+        "min_img_size_bytes": 102400
+      }
+    }
+  }
+}

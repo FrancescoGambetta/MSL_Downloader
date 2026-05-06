@@ -1,0 +1,51 @@
+# macOS
+.DS_Store
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Runtime/cache outputs
+cache/
+data/sessions/
+tmp/
+
+# Generated catalogs (local artifacts)
+catalog.json
+catalog.parquet
+data/catalog/catalog.json
+data/catalog/catalog.parquet
+data/catalog/Catalog_PDS_1.json
+data/catalog/Catalog_PDS_2.json
+data/catalog/Catalog_RawArch.json
+backup/data/catalog/
+.push_export/
+.claude/
+
+# Virtualenv / Conda / tooling caches
+.venv/
+venv/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+*.egg-info/
+dist/
+build/
+.idea/
+.vscode/
+.streamlit/secrets.toml
+
+# Local UI config (machine-specific, contains local paths)
+config/app_ui_config.json
+
+# Local backups / research (not for publish)
+backup_files/
+
+# Work-in-progress rebuild area (keep structure, ignore generated JSON artifacts)
+data/catalog_json_rebuild/**/*.json
+data/catalog_json_rebuild/**/*.parquet
+data/catalog_json_rebuild/**/*.state.json

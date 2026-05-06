@@ -1,0 +1,53 @@
+{
+  "supported_langs": ["it", "en", "fr", "es", "de"],
+  "bulk_confirm_threshold": 50,
+  "mardi_defaults": {
+    "legacy_mode": true,
+    "geometric_correction": true,
+    "geometric_side_by_side": false
+  },
+  "session_defaults": {
+    "current_view": "login",
+    "is_authenticated": false,
+    "current_user_name": "",
+    "current_user_norm": "",
+    "current_session_id": "",
+    "login_pending_user_name": "",
+    "login_pending_user_norm": "",
+    "login_pending_started_at": "",
+    "show_help_popup": false,
+    "help_popup_requested": false,
+    "help_popup_opened_at": 0.0,
+    "ui_mode": "builder",
+    "chat_history": [],
+    "response_source": "n/a",
+    "show_config_dialog": false,
+    "last_query_preview": "",
+    "operation_live_text": "",
+    "is_processing": false,
+    "stop_requested": false,
+    "pending_bulk_action": null,
+    "saved_output_files": [],
+    "saved_output_selected_name": "",
+    "selected_image": "",
+    "selected_image_path": "",
+    "selected_meta_path": "",
+    "selected_meta_obj": {},
+    "filters": {
+      "sol_start": null,
+      "sol_end": null,
+      "cameras": [],
+      "min_img_size": null,
+      "only_with_lbl": false,
+      "dr_variants": [],
+      "name_tokens": [],
+      "file_prefixes": [],
+      "file_name_contains": [],
+      "mastcam_only_drcl": false,
+      "mahli_only_drcl": false,
+      "mardi_only_e01_drcx": false,
+      "navcam_only_iltlf": false,
+      "hazcam_only_lb_edr": false
+    }
+  }
+}

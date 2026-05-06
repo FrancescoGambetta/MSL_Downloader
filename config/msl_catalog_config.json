@@ -1,0 +1,68 @@
+{
+  "base_url": "https://planetarydata.jpl.nasa.gov/img/data/msl/",
+  "coord_url": "https://planetarydata.jpl.nasa.gov/w10n/msl/msl_places/data_localizations/localized_interp_demv2.csv",
+  "coord_local_path": "data/reference/geo/localized_interp_demv2.csv",
+  "coord_parquet_path": "data/reference/geo/localized_interp_demv2.parquet",
+  "output": "data/catalog/catalog.json",
+  "parquet_output": "data/catalog/catalog.parquet",
+  "checkpoint_every_products": 2000,
+  "checkpoint_write_parquet": false,
+  "workers": 12,
+  "min_img_size_bytes_for_lbl": 51200,
+  "sol_start": null,
+  "sol_end": null,
+  "timeout": 30,
+  "retries": 3,
+  "default_cameras": [
+    "mastcam",
+    "mahli",
+    "navcam",
+    "mardi",
+    "hazcam"
+  ],
+  "camera_config": {
+    "mastcam": {
+      "collection_token": "MSLMST_",
+      "data_roots": [
+        "DATA/RDR/SURFACE/"
+      ]
+    },
+    "mahli": {
+      "collection_token": "MSLMHL_",
+      "data_roots": [
+        "DATA/RDR/SURFACE/"
+      ]
+    },
+    "navcam": {
+      "collection_token": "MSLNAV_",
+      "data_roots": [
+        "DATA/",
+        "DATA_V1/"
+      ]
+    },
+    "mardi": {
+      "collection_token": "MSLMRD",
+      "data_roots": [
+        "DATA/RDR/SURFACE/"
+      ]
+    },
+    "hazcam": {
+      "collection_token": "MSLHAZ_",
+      "data_roots": [
+        "DATA/"
+      ]
+    },
+    "chemcam": {
+      "collection_token": "MSLCCM_",
+      "data_roots": [
+        "DATA/"
+      ]
+    }
+  },
+  "output_by_camera": {
+    "chemcam": {
+      "output": "data/catalog_json_rebuild/chemcam/catalogCHEM.json",
+      "parquet_output": "data/catalog_json_rebuild/chemcam/catalogCHEM.parquet"
+    }
+  }
+}
