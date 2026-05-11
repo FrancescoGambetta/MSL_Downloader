@@ -105,7 +105,7 @@ class CatalogDataframeOpsService:
         else:
             name = pd.Series([""] * len(df), index=df.index, dtype="object")
 
-        stem = name.str.replace(r"\\.[A-Z0-9]+$", "", regex=True)
+        stem = name.str.replace(r"\.[A-Z0-9]+$", "", regex=True)
         tail_from_edr = stem.str.extract(r"EDR_([A-Z0-9_]+)$", expand=False).fillna("")
         tail_generic = stem.str.replace(r"^[A-Z]{2,6}_[0-9]+", "", regex=True)
         tail = tail_from_edr.where(tail_from_edr.str.len() > 0, tail_generic).str.strip("_-")

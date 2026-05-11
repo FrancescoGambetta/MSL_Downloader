@@ -216,6 +216,17 @@ def render_builder_sidebar(
 
         if builder_apply:
             st.session_state.filters = updated_filters
+            # Apply filters immediately so the user sees the resulting row count
+            # without having to press RUN.
+            try:
+                rows_now = int(apply_filters() or 0)
+            except Exception:
+                rows_now = int(st.session_state.get("filtered_rows_count", 0) or 0)
+            st.session_state.filtered_rows_count = rows_now
+            try:
+                st.success(t("filters_applied_rows", rows=rows_now))
+            except Exception:
+                st.success(f"Rows={rows_now}")
 
         run_requested = st.button(t("builder_download_process_organize"), width="stretch", key="builder_run_btn")
         stop_clicked = st.button(t("stop_button"), width="stretch", key="stop_request_btn_builder")

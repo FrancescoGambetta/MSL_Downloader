@@ -23,11 +23,15 @@ class CatalogIOService:
         else:
             file_name = pd.Series([""] * len(out), index=out.index)
         out["_file_name"] = file_name
+        # Extract the suffix code from the filename. This is used by filters (e.g. DRCL, DXXX).
+        # Support both PDS (.IMG) and RAW archive (.JPG/.JPEG) and keep the regex case-insensitive.
         out["_suffix_code"] = (
-            file_name.str.extract(r"_([A-Za-z0-9]+)\.(?:IMG|img)$", expand=False)
+            file_name.str.extract(r"(?i)_([A-Za-z0-9]+)\.(?:IMG|JPG|JPEG|PNG|LBL)$", expand=False)
             .fillna("")
             .str.upper()
         )
-        stem = file_name.str.replace(r"\.(?:IMG|img)$", "", regex=True)
-        out["_family_key"] = stem.str.replace(r"_DR[A-Z0-9]{2}$", "", regex=True)
+        stem = file_name.str.replace(r"(?i)\.(?:IMG|JPG|JPEG|PNG|LBL)$", "", regex=True)
+        # Normalize "variants" by stripping the trailing suffix segment (anything after the last underscore).
+        # This matches the catalog builder logic in `core/make_msl_catalog.py:_family_key`.
+        out["_family_key"] = stem.where(~stem.str.contains("_", regex=False), stem.str.rsplit("_", n=1).str[0])
         return out

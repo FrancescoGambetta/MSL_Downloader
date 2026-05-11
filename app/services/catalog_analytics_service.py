@@ -186,16 +186,16 @@ class CatalogAnalyticsService:
         cmdn = self._norm_ascii(cmd)
         has_sol = "sol" in cmdn
         max_patterns = (
-            r"\\bcon\\s+piu\\b",
-            r"\\bpiu\\b",
-            r"\\bmassim[oa]?\\b",
-            r"\\bmax(?:imum)?\\b",
-            r"\\bmost\\b",
-            r"\\bhighest\\b",
-            r"\\bplus\\b",
-            r"\\bmehr\\b",
-            r"\\bmas\\b",
-            r"\\bmayor\\b",
+            r"\bcon\s+piu\b",
+            r"\bpiu\b",
+            r"\bmassim[oa]?\b",
+            r"\bmax(?:imum)?\b",
+            r"\bmost\b",
+            r"\bhighest\b",
+            r"\bplus\b",
+            r"\bmehr\b",
+            r"\bmas\b",
+            r"\bmayor\b",
         )
         has_max = any(re.search(pat, cmdn) for pat in max_patterns)
         return has_sol and has_max
@@ -206,9 +206,9 @@ class CatalogAnalyticsService:
 
     def parse_size_bytes_from_query(self, text: str) -> Optional[int]:
         t = self._norm_ascii(text).replace(",", ".")
-        m = re.search(r"(\\d+(?:\\.\\d+)?)\\s*(kb|mb|gb|b)\\b", t, re.IGNORECASE)
+        m = re.search(r"(\d+(?:\.\d+)?)\s*(kb|mb|gb|b)\b", t, re.IGNORECASE)
         if not m:
-            m = re.search(r"(?:>=|>|min(?:imum)?|almeno|piu grandi di|piu grande di)\\s*(\\d{1,9})\\b", t, re.IGNORECASE)
+            m = re.search(r"(?:>=|>|min(?:imum)?|almeno|piu grandi di|piu grande di)\s*(\d{1,9})\b", t, re.IGNORECASE)
             if m:
                 try:
                     return int(float(m.group(1)))
@@ -230,17 +230,17 @@ class CatalogAnalyticsService:
 
     def parse_sol_range_from_query(self, text: str) -> tuple[Optional[int], Optional[int]]:
         t = self._norm_ascii(text)
-        separators = r"(?:a|al|to|au|hasta|bis|fino(?:\\s+a|al)?|until|till|through|thru|jusqu'?a|ifno|fno|\\-|\\.\\.)"
+        separators = r"(?:a|al|to|au|hasta|bis|fino(?:\s+a|al)?|until|till|through|thru|jusqu'?a|ifno|fno|\-|\.\.)"
         separators_with_and = rf"(?:{separators}|(?:e|and|et|y)(?:\\s+(?:il|lo|la|l|the|el|le))?)"
         patterns = [
-            rf"\\b(?:da|dal|from|de|del|between|tra|entre)?\\s*sol(?:\\s*range)?\\s*(\\d{{1,5}})\\s*{separators_with_and}\\s*(?:sol\\s*)?(\\d{{1,5}})\\b",
-            rf"\\bsol\\s*(\\d{{1,5}})\\s*{separators_with_and}\\s*(?:sol\\s*)?(\\d{{1,5}})\\b",
+            rf"\b(?:da|dal|from|de|del|between|tra|entre)?\s*sol(?:\s*range)?\s*(\d{{1,5}})\s*{separators_with_and}\s*(?:sol\s*)?(\d{{1,5}})\b",
+            rf"\bsol\s*(\d{{1,5}})\s*{separators_with_and}\s*(?:sol\s*)?(\d{{1,5}})\b",
         ]
         for pat in patterns:
             m = re.search(pat, t, re.IGNORECASE)
             if m:
                 return int(m.group(1)), int(m.group(2))
-        m = re.search(r"\\bsol\\s*(\\d{1,5})(?=\\D|$)", t, re.IGNORECASE)
+        m = re.search(r"\bsol\s*(\d{1,5})(?=\D|$)", t, re.IGNORECASE)
         if m:
             v = int(m.group(1))
             return v, v
