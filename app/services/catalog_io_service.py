@@ -24,11 +24,10 @@ class CatalogIOService:
             file_name = pd.Series([""] * len(out), index=out.index)
         out["_file_name"] = file_name
         out["_suffix_code"] = (
-            file_name.str.extract(r"_([A-Za-z0-9]+)\\.(?:IMG|img)$", expand=False)
+            file_name.str.extract(r"_([A-Za-z0-9]+)\.(?:IMG|img)$", expand=False)
             .fillna("")
             .str.upper()
         )
-        stem = file_name.str.replace(r"\\.(?:IMG|img)$", "", regex=True)
+        stem = file_name.str.replace(r"\.(?:IMG|img)$", "", regex=True)
         out["_family_key"] = stem.str.replace(r"_DR[A-Z0-9]{2}$", "", regex=True)
         return out
-
