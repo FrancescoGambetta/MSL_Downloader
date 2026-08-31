@@ -1,8 +1,25 @@
+"""High-level actions triggered by the builder UI: download, process, organize, config.
+
+This is the app's facade layer: `app.py` and `ui_panels/*.py` call plain
+functions here instead of talking to `services/*.py` directly. Most of what
+follows is a thin wrapper that (a) pulls whatever Streamlit `session_state`
+the underlying service needs, and (b) delegates to one of ~14 service
+objects, each lazily created once per session and cached in a module-level
+global (the `_get_xxx_service()` functions right below the imports, e.g.
+`_get_download_processing_service()` -> `DownloadProcessingService`). This
+keeps `services/*.py` Streamlit-agnostic and easy to test on their own,
+while this file is the only place that touches `st.session_state` for them.
+
+The handful of functions with real logic of their own (not just a
+one-line delegate call) get their own docstring below; the thin wrappers
+don't repeat what their target service's docstring already says.
+"""
+
 from __future__ import annotations
 
 import json
 import re
-import sqlite3
+from html import escape
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -13,39 +30,13 @@ import streamlit as st
 from utils.folder_dialog import choose_folder_dialog
 from catalog import (
     apply_filters,
-    analytics_use_filtered_scope,
-    camera_types_report,
-    catalog_content_report,
-    database_count_report,
-    database_max_sol_report,
-    is_analytics_query,
     filter_dataframe,
-    selection_report,
-)
-from parser import (
-    _humanize_parser_response,
-    _intent_match,
-    _is_camera_list_request,
-    _is_unsupported_image_url_request,
-    _normalize_camera_key,
-    _normalize_command_for_parser,
-    _no_pending_bulk_text,
-    _parse_cameras,
-    _parse_int,
-    _parse_sol_range,
-    _split_multi_range_blocks,
-    _parser_validation_note,
-    _wants_all_cameras,
-    _wants_organize_step,
-    _wants_random_sample,
-    set_translator as set_parser_translator,
 )
 from runtime import (
     DEFAULT_BULK_CONFIRM_THRESHOLD,
     MARDI_GEOMETRIC_CORRECTION_DEFAULT,
     MARDI_GEOMETRIC_SIDE_BY_SIDE_DEFAULT,
     MARDI_LEGACY_MODE_DEFAULT,
-    _default_download_path,
     _display_image_name_from_output_file,
     _ensure_writable_download_path,
     _refresh_saved_output_files,
@@ -63,14 +54,10 @@ from runtime import (
 from session import _append_user_action
 
 from portable_engine_adapter import download_records, process_records_with_engine, records_from_dataframe  # type: ignore
-from catalog_runner import CatalogUpdateOptions, run_catalog_update  # type: ignore
 
 from services.app_config_service import AppConfigService
-from services.catalog_update_service import CatalogUpdateService
 from services.download_processing_service import DownloadProcessingService
-from services.output_organizer import OutputOrganizer
-from services.action_dispatcher_service import ActionDispatcherService
-from services.command_submission_service import CommandSubmissionService
+from services.output_organizer_service import OutputOrganizerService
 from services.selection_service import SelectionService
 from services.local_command_handler_service import LocalCommandHandlerService
 from services.image_processing_service import ImageProcessingService
@@ -88,11 +75,8 @@ APP_DIR = Path(__file__).resolve().parent
 
 _T: Callable[..., str] = lambda key, **kwargs: key.format(**kwargs) if kwargs else key
 _APP_CONFIG_SERVICE: AppConfigService | None = None
-_CATALOG_UPDATE_SERVICE: CatalogUpdateService | None = None
 _DOWNLOAD_PROCESSING_SERVICE: DownloadProcessingService | None = None
-_OUTPUT_ORGANIZER: OutputOrganizer | None = None
-_ACTION_DISPATCHER_SERVICE: ActionDispatcherService | None = None
-_COMMAND_SUBMISSION_SERVICE: CommandSubmissionService | None = None
+_OUTPUT_ORGANIZER: OutputOrganizerService | None = None
 _SELECTION_SERVICE: SelectionService | None = None
 _LOCAL_COMMAND_HANDLER_SERVICE: LocalCommandHandlerService | None = None
 _IMAGE_PROCESSING_SERVICE: ImageProcessingService | None = None
@@ -105,41 +89,23 @@ _CAMERA_NAMING_SERVICE: CameraNamingService | None = None
 _ALPHA_PAIR_SERVICE: AlphaPairService | None = None
 
 
+# --- Lazy service singletons -------------------------------------------
+# Each `_get_xxx_service()` below builds its service exactly once per
+# session (guarded by the matching `_XXX_SERVICE` global) and wires in the
+# plain functions/session-derived values the service needs to stay
+# Streamlit-agnostic. See the module docstring above for why this
+# indirection exists.
+
 def _get_app_config_service() -> AppConfigService:
     global _APP_CONFIG_SERVICE
     if _APP_CONFIG_SERVICE is None:
         _APP_CONFIG_SERVICE = AppConfigService(
-            project_root=PROJECT_ROOT,
-            translator=t,
-            normalize_text=normalize_text,
             resolve_download_path=_resolve_download_path,
             refresh_saved_output_files=_refresh_saved_output_files,
             load_app_ui_config=load_app_ui_config,
             save_app_ui_config=save_app_ui_config,
-            load_json=load_json,
-            resolve_msl_config=_resolve_msl_config,
-            ensure_writable_download_path=_ensure_writable_download_path,
-            default_download_path=_default_download_path,
         )
     return _APP_CONFIG_SERVICE
-
-
-def _get_catalog_update_service() -> CatalogUpdateService:
-    global _CATALOG_UPDATE_SERVICE
-    if _CATALOG_UPDATE_SERVICE is None:
-        _CATALOG_UPDATE_SERVICE = CatalogUpdateService(
-            project_root=PROJECT_ROOT,
-            translator=t,
-            normalize_text=normalize_text,
-            normalize_command_for_parser=_normalize_command_for_parser,
-            parse_sol_range=_parse_sol_range,
-            parse_int=_parse_int,
-            parse_cameras=_parse_cameras,
-            resolve_msl_config=_resolve_msl_config,
-            catalog_update_options_cls=CatalogUpdateOptions,
-            run_catalog_update=run_catalog_update,
-        )
-    return _CATALOG_UPDATE_SERVICE
 
 
 def _get_download_processing_service() -> DownloadProcessingService:
@@ -157,6 +123,7 @@ def _get_download_processing_service() -> DownloadProcessingService:
             output_dir_for_source=_output_dir_for_source,
             split_records_by_source=_split_records_by_source,
             split_records_by_lbl=_split_records_by_lbl,
+            filter_completed_records=_filter_completed_records,
             display_image_name_from_output_file=_display_image_name_from_output_file,
             track_saved_output_file=_track_saved_output_file,
             load_json=load_json,
@@ -177,51 +144,21 @@ def _get_download_processing_service() -> DownloadProcessingService:
             finalize_product_jpg_only=_finalize_product_jpg_only,
             apply_raw_archive_hardcoded_exif=_apply_raw_archive_hardcoded_exif,
             write_raw_archive_meta=_write_raw_archive_meta,
+            convert_chemcam_to_jpg=_convert_chemcam_to_jpg,
         )
     return _DOWNLOAD_PROCESSING_SERVICE
 
 
-def _get_output_organizer() -> OutputOrganizer:
+def _get_output_organizer() -> OutputOrganizerService:
     global _OUTPUT_ORGANIZER
     if _OUTPUT_ORGANIZER is None:
-        _OUTPUT_ORGANIZER = OutputOrganizer(
+        _OUTPUT_ORGANIZER = OutputOrganizerService(
             translator=t,
             refresh_saved_output_files=_refresh_saved_output_files,
             camera_folder_for_filename=_camera_folder_for_filename,
             normalize_text=normalize_text,
         )
     return _OUTPUT_ORGANIZER
-
-
-def _get_action_dispatcher_service() -> ActionDispatcherService:
-    global _ACTION_DISPATCHER_SERVICE
-    if _ACTION_DISPATCHER_SERVICE is None:
-        _ACTION_DISPATCHER_SERVICE = ActionDispatcherService(
-            translator=t,
-            normalize_text=normalize_text,
-            run_sql_query=run_sql_query,
-            run_download=run_download,
-            run_download_and_process_interleaved=run_download_and_process_interleaved,
-        )
-    return _ACTION_DISPATCHER_SERVICE
-
-
-def _get_command_submission_service() -> CommandSubmissionService:
-    global _COMMAND_SUBMISSION_SERVICE
-    if _COMMAND_SUBMISSION_SERVICE is None:
-        _COMMAND_SUBMISSION_SERVICE = CommandSubmissionService(
-            translator=t,
-            normalize_text=normalize_text,
-            append_user_action=_append_user_action,
-            handle_local=handle_local,
-            parser_validation_note=_parser_validation_note,
-            humanize_parser_response=_humanize_parser_response,
-            norm_ascii=_norm_ascii,
-            show_combined_config_text=show_combined_config_text,
-            geo_status_text=geo_status_text,
-            show_download_path_text=show_download_path_text,
-        )
-    return _COMMAND_SUBMISSION_SERVICE
 
 
 def _get_selection_service() -> SelectionService:
@@ -235,39 +172,11 @@ def _get_local_command_handler_service() -> LocalCommandHandlerService:
     global _LOCAL_COMMAND_HANDLER_SERVICE
     if _LOCAL_COMMAND_HANDLER_SERVICE is None:
         _LOCAL_COMMAND_HANDLER_SERVICE = LocalCommandHandlerService(
-            translator=t,
             normalize_text=normalize_text,
-            norm_ascii=_norm_ascii,
-            mardi_legacy_mode_enabled=_mardi_legacy_mode_enabled,
-            analytics_use_filtered_scope=analytics_use_filtered_scope,
-            apply_filters=apply_filters,
-            camera_types_report=camera_types_report,
-            catalog_content_report=catalog_content_report,
-            database_count_report=database_count_report,
-            database_max_sol_report=database_max_sol_report,
-            is_analytics_query=is_analytics_query,
-            filter_dataframe=filter_dataframe,
-            selection_report=selection_report,
-            reset_filters_state=_reset_filters_state_for,
             prepare_action_df=_prepare_action_df,
             run_download=run_download,
-            run_process=run_process,
             run_download_and_process_interleaved=run_download_and_process_interleaved,
             organize_photos_simple_layout=organize_photos_simple_layout,
-            choose_download_path_dialog=choose_download_path_dialog,
-            set_download_path=set_download_path,
-            show_combined_config_text=show_combined_config_text,
-            show_download_path_text=show_download_path_text,
-            geo_status_text=geo_status_text,
-            download_geo_csv=download_geo_csv,
-            parse_set_config=_parse_set_config,
-            parse_cfg_value=_parse_cfg_value,
-            set_nested=_set_nested,
-            load_json=load_json,
-            save_json=save_json,
-            resolve_msl_config=_resolve_msl_config,
-            run_catalog_update_from_text=run_catalog_update_from_text,
-            get_selection_df=_get_selection_df_for,
         )
     return _LOCAL_COMMAND_HANDLER_SERVICE
 
@@ -367,7 +276,6 @@ def _strip_lbl_for_raw_records(records: list[dict[str, Any]]) -> list[dict[str, 
 def set_translator(fn: Callable[..., str]) -> None:
     global _T
     _T = fn
-    set_parser_translator(fn)
 
 
 def t(key: str, **kwargs: Any) -> str:
@@ -446,6 +354,14 @@ def _finalize_product_jpg_only(out_dir: Path, product_id: str) -> None:
     Masks (`*_mask.png`) and RGBA outputs are intentionally left untouched.
     """
     _get_image_processing_service().finalize_product_jpg_only(out_dir, product_id)
+
+
+def _convert_chemcam_to_jpg(
+    rec: dict[str, Any],
+    output_dir: str | Path,
+    **kwargs: Any,
+) -> tuple[bool, str]:
+    return _get_image_processing_service().convert_chemcam_to_jpg(rec, output_dir, **kwargs)
 
 def _mastcam_min_output_size_bytes() -> int:
     return _get_output_size_service().mastcam_min_output_size_bytes()
@@ -528,6 +444,13 @@ def _split_records_by_lbl(records: list[dict[str, Any]]) -> tuple[list[dict[str,
 
 def _record_product_id(rec: dict[str, Any]) -> str:
     return _get_record_output_utils_service().record_product_id(rec)
+
+
+def _filter_completed_records(
+    records: list[dict[str, Any]],
+    base_output_path: str | Path,
+) -> tuple[list[dict[str, Any]], int]:
+    return _get_record_output_utils_service().filter_completed_records(records, base_output_path)
 
 
 def _attach_optional_alpha_pairs(
@@ -640,11 +563,8 @@ def _enforce_global_min_output_size(output_dir: str | Path, threshold: int) -> i
     return _get_output_size_service().enforce_global_min_output_size(output_dir, threshold)
 
 
-def _organize_source_buckets(out: Path) -> list[Path]:
-    return _get_record_output_utils_service().organize_source_buckets(out)
-
-
 def organize_photos_in_output() -> tuple[bool, str]:
+    """Sort every image already in the download folder into a `<camera>/` subfolder. Manual "Organize" action, not used by the builder's auto-organize step."""
     path = normalize_text(st.session_state.get("download_path", ""))
     if not path:
         return False, t("output_path_required")
@@ -653,6 +573,11 @@ def organize_photos_in_output() -> tuple[bool, str]:
 
 
 def organize_photos_simple_layout() -> tuple[bool, str]:
+    """Organize the download folder per the "Divide by camera type"/"Divide by SOL" checkboxes.
+
+    This is what `run_builder_download_process_organize` calls automatically
+    after every download/process run.
+    """
     path = normalize_text(st.session_state.get("download_path", ""))
     if not path:
         return False, t("output_path_required")
@@ -664,15 +589,10 @@ def organize_photos_simple_layout() -> tuple[bool, str]:
         divide_by_camera=divide_by_camera,
     )
     return bool(res.ok), res.message
-def _find_output_meta_for_image(src: Path, out_dir: Path) -> Optional[Path]:
-    return _get_record_output_utils_service().find_output_meta_for_image(src, out_dir)
-
-
-def _extract_sol_for_output_file(src: Path, out_dir: Path) -> Optional[int]:
-    return _get_record_output_utils_service().extract_sol_for_output_file(src, out_dir)
 
 
 def organize_photos_by_sol_in_output() -> tuple[bool, str]:
+    """Sort every image already in the download folder into a `sol_<N>/` subfolder. Manual "Organize" action."""
     path = normalize_text(st.session_state.get("download_path", ""))
     if not path:
         return False, t("output_path_required")
@@ -681,6 +601,7 @@ def organize_photos_by_sol_in_output() -> tuple[bool, str]:
 
 
 def _load_selected_image_outputs(product_name: str) -> None:
+    """Load the viewport/metadata panel state for `product_name`: resolve its saved .jpg/.meta.json and stash them in session_state."""
     name = normalize_text(product_name)
     if not name:
         return
@@ -702,60 +623,8 @@ def set_download_path(path: str, persist: bool = True) -> str:
     return _get_app_config_service().set_download_path(st.session_state, path, persist)
 
 
-def show_download_path_text() -> str:
-    return _get_app_config_service().show_download_path_text(st.session_state)
-
-
-def show_combined_config_text() -> str:
-    return _get_app_config_service().show_combined_config_text()
-
-
-def geo_status_text() -> str:
-    return _get_app_config_service().geo_status_text()
-
-
-def download_geo_csv() -> str:
-    return _get_app_config_service().download_geo_csv()
-
-
-def _parse_set_config(text: str) -> tuple[Optional[str], Optional[str]]:
-    return _get_app_config_service().parse_set_config(text)
-
-
-def _parse_cfg_value(raw: str) -> Any:
-    return _get_app_config_service().parse_cfg_value(raw)
-
-
-def _set_nested(cfg: dict[str, Any], dotted_key: str, value: Any) -> None:
-    _get_app_config_service().set_nested(cfg, dotted_key, value)
-
-
-def run_sql_query(df: pd.DataFrame, sql: str) -> tuple[bool, str, pd.DataFrame]:
-    sql_clean = (sql or "").strip().rstrip(";")
-    if not sql_clean:
-        return False, t("sql_missing"), pd.DataFrame()
-    if not re.match(r"(?is)^\s*select\b", sql_clean):
-        return False, t("sql_select_only"), pd.DataFrame()
-    # Guardrails: avoid freezing Streamlit by loading huge DataFrames into SQLite in-memory.
-    # If the query doesn't include a LIMIT, we enforce one; and we also cap the DF rows we load.
-    max_rows = 200_000
-    limit_match = re.search(r"(?is)\blimit\s+(\d+)\b", sql_clean)
-    if limit_match is None:
-        sql_clean = f"{sql_clean} LIMIT 2000"
-    if len(df) > max_rows:
-        df = df.head(max_rows).copy()
-    try:
-        with sqlite3.connect(":memory:") as conn:
-            df.to_sql("catalog", conn, index=False, if_exists="replace")
-            out = pd.read_sql_query(sql_clean, conn)
-    except Exception as exc:
-        return False, t("sql_query_error", error=str(exc)), pd.DataFrame()
-    if len(out) == 0:
-        return True, t("sql_query_zero_rows"), out
-    return True, t("sql_query_ok_rows", rows=len(out)), out
-
-
 def choose_download_path_dialog() -> tuple[bool, str]:
+    """Open the native OS folder picker and, if a folder was chosen, save it as the (persisted) download path."""
     folder = choose_folder_dialog(t("select_download_folder_prompt"))
     if folder:
         set_download_path(folder, persist=True)
@@ -769,44 +638,6 @@ def get_selection_df(all_variants: bool = False) -> pd.DataFrame:
 
 def _get_selection_df_for(state: dict[str, Any], all_variants: bool = False) -> pd.DataFrame:
     return _get_selection_service().get_selection_df(state, all_variants=all_variants)
-
-
-def _selection_list_text() -> str:
-    return _get_local_command_handler_service().selection_list_text(st.session_state)
-
-
-def _block_filters_from_text(block_text: str, available_cams: list[str], *, mardi_legacy_mode: bool, require_lbl: bool) -> dict[str, Any]:
-    return _get_local_command_handler_service().block_filters_from_text(
-        st.session_state,
-        block_text,
-        available_cams,
-        mardi_legacy_mode=mardi_legacy_mode,
-        require_lbl=require_lbl,
-    )
-
-
-def _execute_multi_block_workflow(
-    command: str,
-    *,
-    progress_emit: Optional[Callable[[str], None]] = None,
-    action_kind: str,
-    all_variants: bool,
-    random_sample: bool,
-    global_max_images: Optional[int],
-    global_per_camera_limits: Optional[dict[str, int]],
-    wants_organize: bool,
-) -> str:
-    return _get_local_command_handler_service().execute_multi_block_workflow(
-        st.session_state,
-        command,
-        progress_emit=progress_emit,
-        action_kind=action_kind,
-        all_variants=all_variants,
-        random_sample=random_sample,
-        global_max_images=global_max_images,
-        global_per_camera_limits=global_per_camera_limits,
-        wants_organize=wants_organize,
-    )
 
 
 def _prepare_action_df(
@@ -869,6 +700,7 @@ def run_download(
     per_camera_limits: Optional[dict[str, int]] = None,
     selection_df: Optional[pd.DataFrame] = None,
 ) -> str:
+    """Download only (no post-processing/conversion) the current selection. See also `run_process` and `run_download_and_process_interleaved`."""
     return _get_download_processing_service().run_download(
         requested_path=normalize_text(st.session_state.get("download_path", "")),
         all_variants=all_variants,
@@ -889,6 +721,7 @@ def run_process(
     per_camera_limits: Optional[dict[str, int]] = None,
     selection_df: Optional[pd.DataFrame] = None,
 ) -> str:
+    """Process (convert/organize outputs for) images already present on disk, without downloading anything new."""
     return _get_download_processing_service().run_process(
         requested_path=normalize_text(st.session_state.get("download_path", "")),
         all_variants=all_variants,
@@ -909,6 +742,13 @@ def run_download_and_process_interleaved(
     per_camera_limits: Optional[dict[str, int]] = None,
     selection_df: Optional[pd.DataFrame] = None,
 ) -> str:
+    """Download and process each image right after it lands, instead of downloading everything then processing everything.
+
+    This is the path the builder UI actually uses (via
+    `run_builder_download_process_organize`) -- it also wires up
+    `stop_requested_getter` so the "Stop" button can interrupt the run
+    between images.
+    """
     return _get_download_processing_service().run_download_and_process_interleaved(
         requested_path=normalize_text(st.session_state.get("download_path", "")),
         stop_requested_getter=lambda: bool(st.session_state.get("stop_requested", False)),
@@ -920,12 +760,6 @@ def run_download_and_process_interleaved(
         selection_df=selection_df,
         reference_df=st.session_state.get("df"),
     )
-def run_catalog_update_from_text(command: str) -> str:
-    return _get_catalog_update_service().run_catalog_update_from_text(st.session_state, command)
-
-
-def execute_action(payload: dict[str, Any]) -> str:
-    return _get_action_dispatcher_service().execute_action(st.session_state, payload)
 
 
 def _default_filters_state() -> dict[str, Any]:
@@ -952,16 +786,72 @@ def handle_local(
     command: str,
     progress_emit: Optional[callable] = None,
 ) -> tuple[bool, str]:
+    """Reply to the bulk-download confirmation modal. Returns `(False, "")` when there's no pending bulk action to reply to. See `LocalCommandHandlerService.handle_local`."""
     return _get_local_command_handler_service().handle_local(st.session_state, command, progress_emit=progress_emit)
 
 
 def submit_command(command: str, progress_slot: Any = None, progress_bar: Any = None) -> None:
-    _get_command_submission_service().submit_command(
-        st.session_state,
-        command,
-        progress_slot=progress_slot,
-        progress_bar=progress_bar,
-    )
+    """
+    Runs a reply to the bulk-download confirmation modal ("procedi" / a number
+    / "annulla") -- the only thing still reachable through handle_local since
+    the free-text chat/parser UI was removed. Updates the live progress log
+    and progress bar while the confirmed download runs.
+    """
+    state = st.session_state
+    text = normalize_text(command)
+    if not text:
+        return
+    state["operation_live_text"] = ""
+    state["is_processing"] = True
+    state["stop_requested"] = False
+    progress_lines: list[str] = []
+
+    def _maybe_update_progress_bar(line: str) -> None:
+        if progress_bar is None:
+            return
+        try:
+            m = re.search(r"\b(\d+)\s+of\s+(\d+)\s+images\b", line, flags=re.IGNORECASE)
+            if not m:
+                return
+            cur = int(m.group(1))
+            total = int(m.group(2))
+            if total <= 0:
+                return
+            p = float(max(0, min(cur, total))) / float(total)
+            progress_bar.progress(max(0.0, min(1.0, p)))
+        except Exception:
+            return
+
+    def progress_emit(msg: str) -> None:
+        line = normalize_text(msg)
+        if not line:
+            return
+        progress_lines.append(line)
+        state["operation_live_text"] = "\n".join(progress_lines[-14:])
+        _maybe_update_progress_bar(line)
+        if progress_slot is not None:
+            progress_slot.markdown(
+                f"<div class='live-log'><div class='live-tag'>⟳ {escape(t('live_badge_label'))}</div>"
+                f"<div class='msg-text'>{escape(normalize_text(state.get('operation_live_text')))}</div></div>",
+                unsafe_allow_html=True,
+            )
+
+    try:
+        if progress_bar is not None:
+            try:
+                progress_bar.progress(0.0)
+            except Exception:
+                pass
+        ok, answer = handle_local(text, progress_emit=progress_emit)
+        state["response_source"] = "parser" if ok else "n/a"
+        _append_user_action("command_result", {"source": state["response_source"], "response_preview": normalize_text(answer)[:600]})
+    finally:
+        state["is_processing"] = False
+        if progress_bar is not None:
+            try:
+                progress_bar.progress(1.0)
+            except Exception:
+                pass
 
 
 def run_builder_download_process_organize(

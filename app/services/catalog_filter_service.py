@@ -1,3 +1,5 @@
+"""The core catalog filtering engine: turns a `filters` dict into a filtered DataFrame, applying camera_rules.json along the way."""
+
 from __future__ import annotations
 
 import re
@@ -7,6 +9,8 @@ import pandas as pd
 
 
 class CatalogFilterService:
+    """Filters a catalog DataFrame by Sol range, cameras, source, size/LBL, name tokens, and compiled camera_rules.json constraints, in that order."""
+
     def __init__(
         self,
         *,
@@ -29,6 +33,16 @@ class CatalogFilterService:
         *,
         progress: Optional[Callable[[float, str], None]] = None,
     ) -> pd.DataFrame:
+        """Apply `filters` to `df` in stages (Sol range -> cameras -> source -> min-size/LBL -> name tokens -> camera_rules.json -> RAW global rules/burst reduction), reporting progress through each stage.
+
+        The camera_rules.json stage (`compiled_rules`) is the most
+        expensive: for each compiled camera item whose per-source
+        `filter_key` is enabled in `filters`, it builds a boolean mask for
+        rows belonging to that camera+source and keeps only the ones
+        matching that source's suffix/prefix/contains/min-size
+        constraints -- rows outside the target camera+source are always
+        kept (`out[(~scoped_target) | ok_mask]`).
+        """
         # Avoid eager full DataFrame copies: every filter step below creates a new
         # frame anyway, so copying the entire catalog up-front is wasted work.
         out = df
@@ -286,19 +300,25 @@ class CatalogFilterService:
         if len(out) > 0 and "_file_name" in out.columns:
             raw_rules = rules_cfg.get("raw_global_rules", {}) if isinstance(rules_cfg, dict) else {}
             if isinstance(raw_rules, dict):
-                source_raw_mask = (
-                    out["source"].fillna("").astype(str).str.lower().eq("raw")
-                    if "source" in out.columns
-                    else pd.Series(False, index=out.index)
-                )
-                if bool(source_raw_mask.any()):
+                # drop_filename_contains_any targets filename markers
+                # (THUMBNAIL/EDR_T) that only ever occur on RAW-archive-style
+                # names, so it's safe to apply to every row regardless of
+                # source -- and it must be: core/make_msl_catalog_pre3000.py's
+                # _record_is_allowed (the catalog builder) already applies it
+                # unconditionally. Gating this to source=="raw" meant it
+                # could never fire on a catalog with no "source" column at
+                # all, such as Catalog_PDS.parquet -- which is exactly where
+                # a handful of RAW-archive-origin ChemCam quicklook records
+                # ended up mixed in, invisible to this check while the
+                # builder still (correctly) excluded them. See
+                # devtools/audit_camera_rules_consistency.py.
+                drop_tokens = [str(x).upper() for x in (raw_rules.get("drop_filename_contains_any") or []) if self._normalize_text(x)]
+                if drop_tokens:
                     nup = out["_file_name"].astype(str).str.upper()
-                    drop_tokens = [str(x).upper() for x in (raw_rules.get("drop_filename_contains_any") or []) if self._normalize_text(x)]
-                    if drop_tokens:
-                        keep_mask = pd.Series(True, index=out.index)
-                        for tok in drop_tokens:
-                            keep_mask = keep_mask & (~nup.str.contains(tok, regex=False))
-                        out = out[(~source_raw_mask) | keep_mask]
+                    keep_mask = pd.Series(True, index=out.index)
+                    for tok in drop_tokens:
+                        keep_mask = keep_mask & (~nup.str.contains(tok, regex=False))
+                    out = out[keep_mask]
 
             reduce_cfg = raw_rules.get("reduce_bursts", {}) if isinstance(raw_rules, dict) else {}
             if isinstance(reduce_cfg, dict):

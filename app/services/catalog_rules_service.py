@@ -1,3 +1,13 @@
+"""Loads and compiles camera_rules.json into the flat matcher structure `CatalogFilterService` scans against.
+
+camera_rules.json can express a camera's rule two ways: the current
+per-source `"rules": {"pds": {...}, "raw": {...}}` block, or (PDS-only)
+a set of legacy top-level keys directly on the camera entry (see
+`legacy_pds_constraints`). `compile_camera_rules` normalizes both into one
+`items` list with pre-computed alias regexes so the actual per-row filtering
+in `CatalogFilterService` doesn't have to re-parse the raw JSON per row.
+"""
+
 from __future__ import annotations
 
 import json
@@ -7,6 +17,8 @@ from typing import Any, Callable
 
 
 class CatalogRulesService:
+    """Reads camera_rules.json, merges it over the fallback, and compiles it into the per-camera matcher list."""
+
     def __init__(
         self,
         *,
@@ -17,6 +29,7 @@ class CatalogRulesService:
         self._norm_ascii = norm_ascii
 
     def deep_merge(self, dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
+        """Recursively merge `src` into `dst` (dict values merge; everything else is overwritten)."""
         for k, v in src.items():
             if isinstance(v, dict) and isinstance(dst.get(k), dict):
                 dst[k] = self.deep_merge(dict(dst[k]), v)
@@ -25,6 +38,7 @@ class CatalogRulesService:
         return dst
 
     def load_camera_rules_from_path(self, *, fallback: dict[str, Any], path: Path) -> dict[str, Any]:
+        """Read `path` (camera_rules.json) merged over `fallback`, or just `fallback` if the file is missing/invalid."""
         out = dict(fallback)
         if not path.exists():
             return out
@@ -37,6 +51,7 @@ class CatalogRulesService:
         return out
 
     def norm_token_list(self, values: Any) -> list[str]:
+        """Normalize a list of tokens to unique, non-empty, uppercased strings (order preserved), or [] if `values` isn't a list."""
         if not isinstance(values, list):
             return []
         out: list[str] = []
@@ -50,6 +65,7 @@ class CatalogRulesService:
         return out
 
     def norm_alias_list(self, values: Any) -> list[str]:
+        """Normalize a list of camera-name aliases to unique, non-empty, ASCII-folded lowercase strings, or [] if `values` isn't a list."""
         if not isinstance(values, list):
             return []
         out: list[str] = []
@@ -63,9 +79,11 @@ class CatalogRulesService:
         return out
 
     def compact_ascii(self, text: str) -> str:
+        """ASCII-fold `text` and strip everything but letters/digits, for alias matching that ignores spaces/punctuation (e.g. "Nav Cam" -> "navcam")."""
         return re.sub(r"[^a-z0-9]+", "", self._norm_ascii(text))
 
     def camera_rules_items(self, rules_cfg: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+        """Return `(camera_name, rule_dict)` pairs from camera_rules.json, supporting both the nested `"cameras": {...}` layout and top-level camera keys."""
         if not isinstance(rules_cfg, dict):
             return []
         reserved = {"raw_global_rules", "version", "schema_version", "cameras"}
@@ -83,6 +101,7 @@ class CatalogRulesService:
         return out
 
     def legacy_pds_constraints(self, rule: dict[str, Any]) -> dict[str, Any]:
+        """Extract the pre-`"rules"` top-level PDS constraint keys straight off a camera rule entry (backward compatibility)."""
         keys = (
             "suffix_equals_any",
             "filename_prefix_any",
@@ -98,6 +117,7 @@ class CatalogRulesService:
         return out
 
     def source_constraints(self, rule: dict[str, Any], source_name: str) -> tuple[str, dict[str, Any]] | None:
+        """Return `(filter_key, constraints)` for `source_name` ("pds"/"raw") from a camera rule -- from its `"rules"` block if present, else (PDS only) from the legacy top-level keys. None if this camera has no rule for that source."""
         filter_key_default = self._normalize_text(rule.get("filter_key"))
         rules_block = rule.get("rules")
         if isinstance(rules_block, dict):
@@ -120,6 +140,7 @@ class CatalogRulesService:
         *,
         camera_alias_defaults: dict[str, list[str]],
     ) -> dict[str, Any]:
+        """Compile `raw` (camera_rules.json contents) into `{"raw_global_rules": ..., "items": [...]}`, one item per camera with pre-built alias-matching regexes and per-source (PDS/RAW) filter constraints."""
         compiled: dict[str, Any] = {
             "raw_global_rules": raw.get("raw_global_rules", {}) if isinstance(raw, dict) else {},
             "items": [],

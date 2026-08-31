@@ -145,8 +145,8 @@ def _check_imports() -> None:
     import runtime  # noqa: F401
     import catalog  # noqa: F401
     import actions  # noqa: F401
-    import services.action_dataframe_preparer  # noqa: F401
-    import services.output_organizer  # noqa: F401
+    import services.action_dataframe_service  # noqa: F401
+    import services.output_organizer_service  # noqa: F401
     _ok("core imports (app modules)")
 
 

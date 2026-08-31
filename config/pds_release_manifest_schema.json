@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://msl-image-downloader.local/schemas/pds-release-manifest-v1.json",
+  "title": "MSL PDS catalog release manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifest_schema_version",
+    "catalog_key",
+    "mission",
+    "generated_at_utc",
+    "release",
+    "parquet",
+    "coverage_by_camera",
+    "data_contract",
+    "builder_inputs",
+    "json_reconstruction",
+    "update_state_initialization"
+  ],
+  "properties": {
+    "manifest_schema_version": { "const": 1 },
+    "catalog_key": { "const": "pds" },
+    "mission": { "const": "MSL" },
+    "generated_at_utc": { "type": "string", "format": "date-time" },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["release_id", "role", "mutability", "coverage_authority"],
+      "properties": {
+        "release_id": { "type": "string", "pattern": "^pds-sol[0-9]+-[0-9a-f]{12}$" },
+        "role": { "const": "official_base_catalog" },
+        "mutability": { "const": "immutable_after_distribution" },
+        "coverage_authority": { "const": "release_manifest" }
+      }
+    },
+    "parquet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filename", "size_bytes", "sha256", "row_count", "column_count", "columns", "first_product_sol", "last_product_sol", "product_sol_count"],
+      "properties": {
+        "filename": { "type": "string", "minLength": 1 },
+        "size_bytes": { "type": "integer", "minimum": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "row_count": { "type": "integer", "minimum": 0 },
+        "column_count": { "type": "integer", "minimum": 1 },
+        "columns": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "first_product_sol": { "type": "integer", "minimum": 0 },
+        "last_product_sol": { "type": "integer", "minimum": 0 },
+        "product_sol_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "coverage_by_camera": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mastcam", "mahli", "navcam", "hazcam", "chemcam", "mardi"],
+      "properties": {
+        "mastcam": { "$ref": "#/$defs/cameraCoverage" },
+        "mahli": { "$ref": "#/$defs/cameraCoverage" },
+        "navcam": { "$ref": "#/$defs/cameraCoverage" },
+        "hazcam": { "$ref": "#/$defs/cameraCoverage" },
+        "chemcam": { "$ref": "#/$defs/cameraCoverage" },
+        "mardi": { "$ref": "#/$defs/cameraCoverage" }
+      }
+    },
+    "data_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["canonical_identity", "required_non_null", "optional_nullable", "duplicate_identity_policy", "exact_duplicate_row_policy"],
+      "properties": {
+        "canonical_identity": { "const": "img_url" },
+        "required_non_null": { "const": ["img_url", "product_id", "camera", "sol"] },
+        "optional_nullable": { "const": ["lbl_url"] },
+        "duplicate_identity_policy": { "const": "reject_release" },
+        "exact_duplicate_row_policy": { "const": "reject_release" }
+      }
+    },
+    "builder_inputs": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/artifact" }
+    },
+    "json_reconstruction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required_for_download", "required_for_catalog_updates", "canonical_filename", "catalog_schema_version", "roundtrip_verified", "verified_row_count", "reference_elapsed_seconds", "reference_peak_rss_bytes", "reference_json_size_bytes"],
+      "properties": {
+        "required_for_download": { "const": false },
+        "required_for_catalog_updates": { "const": true },
+        "canonical_filename": { "const": "Catalog_PDS.json" },
+        "catalog_schema_version": { "const": 2 },
+        "roundtrip_verified": { "const": true },
+        "verified_row_count": { "type": "integer", "minimum": 0 },
+        "reference_elapsed_seconds": { "type": "number", "minimum": 0 },
+        "reference_peak_rss_bytes": { "type": "integer", "minimum": 0 },
+        "reference_json_size_bytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "update_state_initialization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "quick_update_start_sol", "checked_through_sol", "scanned_sol_urls_reconstructable_from_parquet", "fabricate_scanned_sol_urls", "initial_builder_state", "historical_backfills"]
+      ,"properties": {
+        "strategy": { "const": "coverage_boundary_plus_separate_integrity_check" },
+        "quick_update_start_sol": { "type": "integer", "minimum": 1 },
+        "checked_through_sol": { "type": "integer", "minimum": 0 },
+        "scanned_sol_urls_reconstructable_from_parquet": { "const": false },
+        "fabricate_scanned_sol_urls": { "const": false },
+        "initial_builder_state": { "const": "empty" },
+        "historical_backfills": { "const": "detect_with_integrity_check_or_overlap_scan" }
+      }
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filename", "size_bytes", "sha256"],
+      "properties": {
+        "filename": { "type": "string", "minLength": 1 },
+        "size_bytes": { "type": "integer", "minimum": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "cameraCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["product_count", "product_sol_count", "first_product_sol", "last_product_sol", "checked_through_sol", "checked_through_source"],
+      "properties": {
+        "product_count": { "type": "integer", "minimum": 0 },
+        "product_sol_count": { "type": "integer", "minimum": 0 },
+        "first_product_sol": { "type": ["integer", "null"], "minimum": 0 },
+        "last_product_sol": { "type": ["integer", "null"], "minimum": 0 },
+        "checked_through_sol": { "type": "integer", "minimum": 0 },
+        "checked_through_source": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

@@ -1,3 +1,5 @@
+"""Orchestrates the "Apply filters" action: filters PDS+RAW in parallel, dedups, and caches the result."""
+
 from __future__ import annotations
 
 import hashlib
@@ -9,6 +11,8 @@ import pandas as pd
 
 
 class CatalogApplyFiltersService:
+    """Runs `filter_dataframe` over the PDS and RAW sources (in parallel when there's no progress callback to update), merges, dedups, and caches by a filters+catalog digest."""
+
     def __init__(
         self,
         *,
@@ -23,6 +27,7 @@ class CatalogApplyFiltersService:
         self._persist_selection_from_filtered = persist_selection_from_filtered
 
     def filters_cache_key(self, filters: dict[str, Any], token: str) -> str:
+        """Hash `filters` + a catalog-state `token` into a cache key so a repeat "Apply filters" with nothing changed can reuse the last result."""
         try:
             payload = json.dumps(filters or {}, sort_keys=True, ensure_ascii=False, default=str)
         except Exception:
@@ -36,6 +41,7 @@ class CatalogApplyFiltersService:
         *,
         progress: Optional[Callable[[float, str], None]] = None,
     ) -> int:
+        """Filter the catalog per `state["filters"]`, store `df_filtered`(+`_pds`/`_raw`) in `state`, and return the row count. Serves from cache when the filters+catalog haven't changed since last call."""
         df, filters, df_pds, df_raw = self._read_state(state)
         cache_key = self._filters_cache_key_for_state(state, filters)
 
@@ -82,6 +88,7 @@ class CatalogApplyFiltersService:
         *,
         progress: Optional[Callable[[float, str], None]] = None,
     ) -> bool:
+        """If `state["_filters_cache"]` matches `cache_key`, restore its filtered DataFrames into `state` and return True; otherwise False (caller must actually filter)."""
         cached = state.get("_filters_cache")
         if not (isinstance(cached, dict) and cached.get("key") == cache_key):
             return False
@@ -102,6 +109,7 @@ class CatalogApplyFiltersService:
         state: dict[str, Any],
         progress: Optional[Callable[[float, str], None]] = None,
     ) -> pd.DataFrame:
+        """Filter PDS and RAW separately (in a thread pool when `progress` is None, else sequentially -- Streamlit progress callbacks aren't thread-safe) and concatenate the results."""
         if isinstance(df_pds, pd.DataFrame) or isinstance(df_raw, pd.DataFrame):
             src_pds = df_pds if isinstance(df_pds, pd.DataFrame) else pd.DataFrame()
             src_raw = df_raw if isinstance(df_raw, pd.DataFrame) else pd.DataFrame()
@@ -148,6 +156,7 @@ class CatalogApplyFiltersService:
         state: dict[str, Any],
         progress: Optional[Callable[[float, str], None]] = None,
     ) -> pd.DataFrame:
+        """Deduplicate the merged filtered DataFrame, store it as `state["df_filtered"]`, and persist it as the new selection."""
         self._safe_progress(progress, 0.93, "Deduplicazione")
         out = self._deduplicate_with_source_priority(out)
         # deduplicate_with_source_priority already resets index.

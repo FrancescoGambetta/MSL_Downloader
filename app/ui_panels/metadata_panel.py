@@ -1,3 +1,5 @@
+"""The metadata pane next to the image viewport: shows the selected image's .meta.json fields, or a generic status box when nothing is selected."""
+
 from __future__ import annotations
 
 from typing import Any, Callable
@@ -10,6 +12,7 @@ def render_metadata_panel(
     t: Callable[..., str],
     meta_line_html: Callable[..., str],
 ) -> None:
+    """Render the selected image's key metadata fields, or (if nothing is selected) a generic mission/filter-count status box."""
     st.markdown(f'<div class="pane-title">{t("metadata_title")}</div>', unsafe_allow_html=True)
     selected_meta = st.session_state.get("selected_meta_obj", {}) or {}
     if selected_meta:

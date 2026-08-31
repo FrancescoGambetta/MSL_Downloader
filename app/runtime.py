@@ -1,3 +1,20 @@
+"""Runtime configuration, session_state defaults, and cached I/O (catalog parquet, selection store, output index).
+
+Loads `config/runtime_paths.json` (where things live), `config/app_defaults.json`
+(session_state defaults + feature thresholds), and `config/app_ui_config.json`
+(persisted user preferences), and exposes the cached catalog/selection/output
+readers used throughout the app. Follows the same lazy-singleton
+`_get_xxx_service()` pattern as `actions.py`/`catalog.py` (see their
+docstrings) to keep `services/*.py` Streamlit-agnostic.
+
+Every `st.cache_data`-decorated loader here takes an explicit file-state
+argument (mtime, or mtime+size) rather than caching on the path alone --
+Streamlit's cache key only depends on hashed arguments, so a path-only cache
+would keep serving the first-ever file content for the life of the process
+even after the file changes on disk. See `load_catalog` and
+`_load_runtime_paths_cached` for the concrete pattern.
+"""
+
 from __future__ import annotations
 
 import copy
@@ -20,6 +37,7 @@ PROJECT_ROOT = APP_DIR.parent
 
 
 def normalize_text(v: Any) -> str:
+    """Coerce almost anything to a trimmed string: None -> "", a list/tuple -> its first element, else str(v).strip()."""
     if v is None:
         return ""
     if isinstance(v, (list, tuple)):
@@ -28,6 +46,7 @@ def normalize_text(v: Any) -> str:
 
 
 def load_json(path: Path) -> dict[str, Any]:
+    """Read and parse a JSON file, returning {} if it's missing or invalid (never raises)."""
     if not path.exists():
         return {}
     try:
@@ -37,6 +56,7 @@ def load_json(path: Path) -> dict[str, Any]:
 
 
 def save_json(path: Path, data: dict[str, Any]) -> None:
+    """Write `data` as pretty-printed JSON to `path`, creating parent directories as needed."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -63,7 +83,6 @@ _APP_DEFAULTS_FALLBACK: dict[str, Any] = {
         "help_popup_opened_at": 0.0,
         "help_popup_dismissed": False,
         "ui_mode": "builder",
-        "chat_history": [],
         "response_source": "n/a",
         "show_config_dialog": False,
         "last_query_preview": "",
@@ -101,6 +120,7 @@ _APP_DEFAULTS_FALLBACK: dict[str, Any] = {
 
 
 def _load_app_defaults() -> dict[str, Any]:
+    """Load config/app_defaults.json, merged (one level deep) over the built-in fallback above."""
     out = copy.deepcopy(_APP_DEFAULTS_FALLBACK)
     p = PROJECT_ROOT / "config" / "app_defaults.json"
     if not p.exists():
@@ -180,8 +200,18 @@ def _runtime_paths_path() -> Path:
 
 
 @st.cache_data(show_spinner=False)
-def load_runtime_paths() -> dict[str, Any]:
+def _load_runtime_paths_cached(mtime: float) -> dict[str, Any]:
     return _get_runtime_paths_service().load_runtime_paths_uncached()
+
+
+def load_runtime_paths() -> dict[str, Any]:
+    """Return config/runtime_paths.json's contents, re-read whenever the file's mtime changes."""
+    p = _runtime_paths_path()
+    try:
+        mtime = float(p.stat().st_mtime) if p.exists() else 0.0
+    except Exception:
+        mtime = 0.0
+    return _load_runtime_paths_cached(mtime)
 
 
 def _resolve_path(key: str, default_rel: str) -> Path:
@@ -228,10 +258,12 @@ def _sanitize_app_ui_config(cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_app_ui_config() -> dict[str, Any]:
+    """Load config/app_ui_config.json (persisted theme/lang/download-path/etc.), with transient keys (API tokens) stripped."""
     return _get_runtime_paths_service().load_app_ui_config(cfg=load_runtime_paths(), transient_keys=_UI_CONFIG_TRANSIENT_KEYS)
 
 
 def save_app_ui_config(cfg: dict[str, Any]) -> None:
+    """Persist `cfg` to config/app_ui_config.json (transient keys stripped first). Shared across every session -- see `_UI_CONFIG_TRANSIENT_KEYS`."""
     _get_runtime_paths_service().save_app_ui_config(
         cfg=load_runtime_paths(),
         value=cfg,
@@ -256,6 +288,7 @@ def _ensure_writable_download_path(path: str) -> tuple[bool, str]:
 
 
 def _display_image_name_from_output_file(filename: str) -> str:
+    """Strip a saved output filename down to its bare product_id (drop `.meta.json`/.jpg/.png/.img/.lbl), or "" if it's not a recognized output file."""
     name = normalize_text(filename)
     if not name:
         return ""
@@ -302,25 +335,47 @@ def _resolve_output_files_for_product(product_name: str) -> tuple[Optional[Path]
 
 
 @st.cache_data(show_spinner=False)
-def load_catalog(path: str, columns: Optional[list[str]] = None) -> pd.DataFrame:
+def _load_catalog_cached(path: str, file_state_token: str, columns: Optional[list[str]] = None) -> pd.DataFrame:
     return _get_catalog_io_service().load_catalog(path, columns=columns)
 
 
+def load_catalog(path: str, columns: Optional[list[str]] = None) -> pd.DataFrame:
+    """Read the PDS or RAW Archive catalog parquet at `path`, cached and re-read whenever the file changes."""
+    # st.cache_data only keys its cache on the arguments it hashes -- a plain
+    # path string never changes when the same file is rewritten on disk, so
+    # without a file-state argument the cache would silently keep serving the
+    # first-ever parquet content for the life of the process. Pass mtime+size
+    # (NOT prefixed with "_", which Streamlit would exclude from hashing) so a
+    # changed file actually busts the cache.
+    p = Path(path)
+    try:
+        st_info = p.stat()
+        file_state_token = f"{st_info.st_mtime:.6f}:{st_info.st_size}"
+    except Exception:
+        file_state_token = "missing"
+    return _load_catalog_cached(path, file_state_token, columns=columns)
+
+
 def prepare_catalog_index(df: pd.DataFrame) -> pd.DataFrame:
+    """Add whatever index/derived columns the rest of the app expects on a freshly-loaded catalog DataFrame."""
     return _get_catalog_io_service().prepare_catalog_index(df)
 
 
 def load_selected_row_ids() -> list[int]:
+    """Load the persisted set of selected catalog row IDs from the on-disk selection store."""
     return _get_runtime_selection_store_service().load_selected_row_ids()
 
 
 def save_selected_row_ids(row_ids: list[int]) -> None:
+    """Persist `row_ids` as the current selection to the on-disk selection store."""
     _get_runtime_selection_store_service().save_selected_row_ids(st.session_state, row_ids)
 
 
 def get_selected_images_df() -> pd.DataFrame:
+    """Return the catalog rows for the currently persisted selection, as a DataFrame."""
     return _get_runtime_selection_store_service().get_selected_images_df(st.session_state)
 
 
 def persist_selection_from_filtered() -> int:
+    """Save the currently filtered rows (`st.session_state["df"]`) as the new selection. Returns how many rows were saved."""
     return _get_runtime_selection_store_service().persist_selection_from_filtered(st.session_state)

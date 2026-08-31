@@ -59,7 +59,6 @@ Logica “catalogo”:
   - `app/services/catalog_io_service.py` (load/prepare index)
   - `app/services/catalog_filter_service.py` (logica filtri)
   - `app/services/catalog_apply_filters_service.py` (apply + cache + selection persistence)
-  - `app/services/catalog_analytics_service.py` (report/analytics)
   - `app/services/catalog_rules_service.py` (camera rules compile/load)
   - `app/services/catalog_dataframe_ops_service.py` (dedup/ops dataframe)
 

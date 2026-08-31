@@ -1,18 +1,31 @@
+"""The download-and-process engine: fetches PDS IMG+LBL pairs over HTTP, decodes them to JPEG with EXIF/GPS metadata, and (for Mastcam) applies the Bayer-demosaic pipeline.
+
+This is the "portable" engine invoked by `portable_engine_adapter.py` (which
+Metashape's Python subprocess launches, hence "portable" -- it must have no
+dependency on the app's Streamlit/session code). Central entry points:
+`process_single_product` (download + decode + EXIF-tag + save one product,
+plus its companion `.meta.json`) and `process_products_from_catalog` (drive
+`process_single_product` over every row of a catalog DataFrame, with
+concurrency/progress/cancellation support). Rover-CSV GPS matching reuses
+`metashape_engine.match_rover_row`, sped up here via a sorted-index fast path
+(`_build_rover_rows_index`/`_match_rover_row_fast`) since this module scans
+many more products per run than a single Metashape click.
+"""
+
 from __future__ import annotations
 
 import bisect
 import io
 import json
-import posixpath
 import re
+import threading
+import time
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, Callable, Optional
-from urllib.parse import urljoin, urlparse
 
 import numpy as np
 import requests
-from bs4 import BeautifulSoup
 from PIL import Image
 
 try:
@@ -113,6 +126,7 @@ def _session_with_retries() -> requests.Session:
 
 
 def _load_json_file(path: Path, default: dict[str, Any]) -> dict[str, Any]:
+    """Read and parse `path` as a JSON object, returning `default` if the file is missing, invalid, or not an object."""
     if not path.exists():
         return dict(default)
     try:
@@ -123,6 +137,7 @@ def _load_json_file(path: Path, default: dict[str, Any]) -> dict[str, Any]:
 
 
 def _load_mastcam_apply_rules() -> dict[str, Any]:
+    """Load (and cache for the process lifetime) `config/mastcam_bayer_apply_config.json`, which decides *which* products get the Bayer pipeline applied."""
     global _MASTCAM_APPLY_RULES_CACHE
     if _MASTCAM_APPLY_RULES_CACHE is None:
         _MASTCAM_APPLY_RULES_CACHE = _load_json_file(
@@ -140,6 +155,7 @@ def _load_mastcam_apply_rules() -> dict[str, Any]:
 
 
 def _get_mastcam_pipeline() -> MastcamBayerPipeline:
+    """Build (and cache, keyed by the config's own content so edits invalidate it) the `MastcamBayerPipeline` from `config/mastcam_bayer_config.json`, which decides *how* the Bayer pipeline runs once applied."""
     global _MASTCAM_PIPELINE_CACHE, _MASTCAM_PIPELINE_CACHE_KEY
     cfg_raw = _load_json_file(MASTCAM_BAYER_PROCESS_CONFIG_PATH, {})
     key = json.dumps(cfg_raw, sort_keys=True)
@@ -175,6 +191,7 @@ def _get_mastcam_pipeline() -> MastcamBayerPipeline:
 
 
 def _matches_mastcam_apply_rule(product: Optional[PdsProduct]) -> tuple[bool, str]:
+    """Check `product` against `_load_mastcam_apply_rules()`'s match rules (exact product id, product-id prefix, or instrument id); returns `(should_apply, reason)`."""
     rules = _load_mastcam_apply_rules()
     if not bool(rules.get("enabled", False)):
         return False, "disabled"
@@ -304,6 +321,8 @@ def _emit_progress(
     lbl_url: Optional[str] = None,
     base_url: Optional[str] = None,
     record: Optional[dict[str, Any]] = None,
+    timings: Optional[dict[str, float]] = None,
+    io_sources: Optional[dict[str, str]] = None,
 ) -> None:
     """
     Emits a structured progress event to the optional callback.
@@ -326,518 +345,11 @@ def _emit_progress(
         "lbl_url": lbl_url,
         "base_url": base_url,
         "record": record,
+        "timings": timings,
+        "io_sources": io_sources,
     }
 
     progress_callback(payload)
-
-
-# ============================================================
-# PDS catalog scanning
-# ============================================================
-
-def _is_directory_href(href: str) -> bool:
-    """
-    Returns True if an href looks like a directory entry.
-
-    The JPL PDS directory listings typically expose directories with a
-    trailing slash. This helper keeps the rule centralised.
-    """
-    return href.endswith("/")
-
-
-def _is_img_href(href: str) -> bool:
-    """
-    Returns True only for IMG products that are intended to be processed.
-
-    Current rule:
-    - accept only DRCL IMG products
-    - reject all other IMG variants
-
-    This keeps the scanner conservative and avoids pulling products whose
-    decoding path is not currently supported by the engine.
-    """
-    href_u = href.upper()
-    return href_u.endswith("_DRCL.IMG")
-
-
-def _lbl_from_img_href(href: str) -> str:
-    """
-    Converts an IMG href into the corresponding LBL href.
-
-    Example:
-    - 3419ML...IMG -> 3419ML...LBL
-    """
-    if href.upper().endswith(".IMG"):
-        return href[:-4] + ".LBL"
-    return href
-
-
-def _normalise_url(url: str) -> str:
-    """
-    Normalises a URL string by removing duplicate slashes in the path
-    while preserving scheme and host.
-    """
-    parsed = urlparse(url)
-    normalised_path = posixpath.normpath(parsed.path)
-    if parsed.path.endswith("/") and not normalised_path.endswith("/"):
-        normalised_path += "/"
-    return parsed._replace(path=normalised_path).geturl()
-
-
-def _is_within_base_tree(url: str, base_root_url: str) -> bool:
-    """
-    Returns True only when `url` is under the same scheme/host/path tree of
-    `base_root_url`.
-
-    This prevents the recursive scanner from walking upward via links such as
-    "Parent Directory", which in these indexes is often an absolute URL.
-    """
-    url_n = _normalise_url(url)
-    base_n = _normalise_url(base_root_url)
-
-    u = urlparse(url_n)
-    b = urlparse(base_n)
-
-    if u.scheme != b.scheme or u.netloc != b.netloc:
-        return False
-
-    base_path = b.path if b.path.endswith("/") else f"{b.path}/"
-    return u.path.startswith(base_path)
-
-
-def _extract_catalog_metadata(
-    img_url: str,
-    directory_url: str,
-    *,
-    img_size_human: Optional[str],
-    img_size_bytes: Optional[int],
-) -> dict[str, Any]:
-    """
-    Extracts lightweight metadata from URL/path naming conventions.
-
-    This metadata is intended for pre-download filtering in a catalog UI.
-    """
-    product_id = Path(img_url).stem
-    filename = Path(img_url).name
-
-    parsed_dir = urlparse(directory_url)
-    dir_name = Path(parsed_dir.path.rstrip("/")).name
-
-    sol = None
-    if dir_name.isdigit():
-        sol = int(dir_name)
-    else:
-        m_sol = re.match(r"^SOL0*([0-9]+)$", dir_name, flags=re.IGNORECASE)
-        if m_sol:
-            sol = int(m_sol.group(1))
-
-    instrument_code = None
-    m_instrument = re.match(r"^\d{4}([A-Z]{2})", product_id)
-    if m_instrument:
-        instrument_code = m_instrument.group(1)
-
-    product_class = None
-    m_class = re.search(r"\d([CI])\d{2}_", product_id)
-    if m_class:
-        product_class = m_class.group(1)
-
-    variant = None
-    if "_" in product_id:
-        tail = product_id.split("_", 1)[1]
-        if tail:
-            variant = tail
-
-    return {
-        "filename": filename,
-        "sol": sol,
-        "instrument_code": instrument_code,
-        "product_class": product_class,
-        "variant": variant,
-        "img_size_human": img_size_human,
-        "img_size_bytes": img_size_bytes,
-    }
-
-
-def _size_text_to_bytes(size_text: str) -> Optional[int]:
-    """
-    Converts Apache-style human-readable size strings (e.g. 162K, 1.7M) to bytes.
-    Returns None when size is unknown/non-numeric.
-    """
-    s = (size_text or "").strip().upper()
-    if not s or s == "-":
-        return None
-
-    m = re.match(r"^(\d+(?:\.\d+)?)([KMGTP]?)$", s)
-    if not m:
-        return None
-
-    value = float(m.group(1))
-    unit = m.group(2)
-    factors = {
-        "": 1,
-        "K": 1024,
-        "M": 1024 ** 2,
-        "G": 1024 ** 3,
-        "T": 1024 ** 4,
-        "P": 1024 ** 5,
-    }
-    return int(round(value * factors[unit]))
-
-
-def list_directory_links(
-    base_url: str,
-    session: Optional[requests.Session] = None,
-) -> list[dict[str, Any]]:
-    """
-    Lists unique href entries found in an HTML directory page.
-
-    Each entry includes:
-    - href
-    - size_human
-    - size_bytes
-    """
-    html = fetch_text(base_url, session=session)
-    soup = BeautifulSoup(html, "html.parser")
-
-    hrefs: list[dict[str, Any]] = []
-    seen: set[str] = set()
-
-    for a in soup.select("table#indexlist a[href]"):
-        href = str(a.get("href", "")).strip()
-        if not href or href in {"../", "./"}:
-            continue
-        if href in seen:
-            continue
-        seen.add(href)
-
-        size_human: Optional[str] = None
-        size_bytes: Optional[int] = None
-
-        tr = a.find_parent("tr")
-        if tr is not None:
-            size_cell = tr.find("td", class_="indexcolsize")
-            if size_cell is not None:
-                raw_size = size_cell.get_text(" ", strip=True)
-                if raw_size and raw_size != "-":
-                    size_human = raw_size
-                    size_bytes = _size_text_to_bytes(raw_size)
-
-        hrefs.append(
-            {
-                "href": href,
-                "size_human": size_human,
-                "size_bytes": size_bytes,
-            }
-        )
-
-    return hrefs
-
-
-def scan_pds_products_recursive(
-    base_url: str,
-    session: Optional[requests.Session] = None,
-    progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
-) -> list[dict[str, Any]]:
-    """
-    Recursively scans a PDS directory tree and returns IMG/LBL product pairs.
-
-    Each returned record contains:
-    - base_url
-    - img_url
-    - lbl_url
-
-    Only IMG files are treated as primary products. The corresponding LBL
-    URL is inferred from the IMG filename.
-    """
-    base_url = _normalise_url(base_url)
-    if not base_url.endswith("/"):
-        base_url = f"{base_url}/"
-
-    own_session = session is None
-    session = session or _session_with_retries()
-
-    products: list[dict[str, Any]] = []
-    visited_dirs: set[str] = set()
-    seen_product_urls: set[str] = set()
-
-    def _walk(url: str) -> None:
-        url = _normalise_url(url)
-
-        if not _is_within_base_tree(url, base_url):
-            _emit_progress(
-                progress_callback,
-                stage="scan_skip_outside_base",
-                message=f"Skipping outside-base directory link: {url}",
-                base_url=url,
-            )
-            return
-
-        if url in visited_dirs:
-            return
-        visited_dirs.add(url)
-
-        _emit_progress(
-            progress_callback,
-            stage="scan_directory",
-            message=f"Scanning directory: {url}",
-            base_url=url,
-        )
-
-        hrefs = list_directory_links(url, session=session)
-
-        for entry in hrefs:
-            href = str(entry.get("href", "")).strip()
-            if not href:
-                continue
-            if href.startswith(("?", "#", "mailto:", "javascript:")):
-                continue
-
-            full_url = _normalise_url(urljoin(url, href))
-
-            if _is_directory_href(href):
-                if not _is_within_base_tree(full_url, base_url):
-                    continue
-                _walk(full_url)
-                continue
-
-            if _is_img_href(href):
-                if not _is_within_base_tree(full_url, base_url):
-                    continue
-                if full_url in seen_product_urls:
-                    continue
-
-                seen_product_urls.add(full_url)
-
-                record = {
-                    "base_url": url,
-                    "img_url": full_url,
-                    "lbl_url": _normalise_url(urljoin(url, _lbl_from_img_href(href))),
-                }
-                record.update(
-                    _extract_catalog_metadata(
-                        record["img_url"],
-                        url,
-                        img_size_human=entry.get("size_human"),
-                        img_size_bytes=entry.get("size_bytes"),
-                    )
-                )
-                products.append(record)
-
-                _emit_progress(
-                    progress_callback,
-                    stage="scan_found_product",
-                    message=f"Found product: {full_url}",
-                    current=len(products),
-                    product_id=Path(full_url).stem,
-                    img_url=record["img_url"],
-                    lbl_url=record["lbl_url"],
-                    base_url=url,
-                    record=record,
-                )
-
-    try:
-        _emit_progress(
-            progress_callback,
-            stage="scan_start",
-            message=f"Starting recursive scan from: {base_url}",
-            base_url=base_url,
-        )
-
-        _walk(base_url)
-
-        _emit_progress(
-            progress_callback,
-            stage="scan_done",
-            message=f"Scan completed. Found {len(products)} products.",
-            current=len(products),
-            total=len(products),
-            base_url=base_url,
-        )
-
-        return products
-    finally:
-        if own_session:
-            session.close()
-
-
-def scan_pds_products_in_directory(
-    base_url: str,
-    session: Optional[requests.Session] = None,
-    progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
-) -> list[dict[str, Any]]:
-    """
-    Scans a single directory page (non-recursive) and returns IMG/LBL pairs.
-
-    This is faster than recursive scanning when caller already knows the exact
-    SOL directory to inspect.
-    """
-    base_url = _normalise_url(base_url)
-    if not base_url.endswith("/"):
-        base_url = f"{base_url}/"
-
-    own_session = session is None
-    session = session or _session_with_retries()
-
-    products: list[dict[str, Any]] = []
-    seen_product_urls: set[str] = set()
-
-    try:
-        _emit_progress(
-            progress_callback,
-            stage="scan_directory",
-            message=f"Scanning directory: {base_url}",
-            base_url=base_url,
-        )
-
-        hrefs = list_directory_links(base_url, session=session)
-        for entry in hrefs:
-            href = str(entry.get("href", "")).strip()
-            if not href:
-                continue
-            if href.startswith(("?", "#", "mailto:", "javascript:")):
-                continue
-            if not _is_img_href(href):
-                continue
-
-            full_url = _normalise_url(urljoin(base_url, href))
-            if full_url in seen_product_urls:
-                continue
-            seen_product_urls.add(full_url)
-
-            record = {
-                "base_url": base_url,
-                "img_url": full_url,
-                "lbl_url": _normalise_url(urljoin(base_url, _lbl_from_img_href(href))),
-            }
-            record.update(
-                _extract_catalog_metadata(
-                    record["img_url"],
-                    base_url,
-                    img_size_human=entry.get("size_human"),
-                    img_size_bytes=entry.get("size_bytes"),
-                )
-            )
-            products.append(record)
-
-            _emit_progress(
-                progress_callback,
-                stage="scan_found_product",
-                message=f"Found product: {full_url}",
-                current=len(products),
-                product_id=Path(full_url).stem,
-                img_url=record["img_url"],
-                lbl_url=record["lbl_url"],
-                base_url=base_url,
-                record=record,
-            )
-
-        _emit_progress(
-            progress_callback,
-            stage="scan_done",
-            message=f"Scan completed. Found {len(products)} products in directory.",
-            current=len(products),
-            total=len(products),
-            base_url=base_url,
-        )
-        return products
-    finally:
-        if own_session:
-            session.close()
-
-
-def build_global_catalog_for_sol(
-    *,
-    sol: int,
-    include_surface: bool = True,
-    include_navcam_mosaic: bool = True,
-    session: Optional[requests.Session] = None,
-    progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
-) -> list[dict[str, Any]]:
-    """
-    Builds a combined catalog for one SOL from multiple data sources.
-
-    Current supported sources:
-    - SURFACE RDR
-    - NAVCAM MOSAIC
-    """
-    source_urls: list[tuple[str, str]] = []
-
-    if include_surface:
-        source_urls.append(
-            (
-                "surface_rdr",
-                f"https://planetarydata.jpl.nasa.gov/img/data/msl/MSLMST_0030/DATA/RDR/SURFACE/{sol}/",
-            )
-        )
-    if include_navcam_mosaic:
-        source_urls.append(
-            (
-                "navcam_mosaic",
-                f"https://planetarydata.jpl.nasa.gov/img/data/msl/msl_navcam_mosaic/DATA/SOL{sol:05d}/",
-            )
-        )
-
-    own_session = session is None
-    session = session or _session_with_retries()
-
-    global_catalog: list[dict[str, Any]] = []
-    seen_img_urls: set[str] = set()
-
-    try:
-        for source_key, url in source_urls:
-            _emit_progress(
-                progress_callback,
-                stage="global_scan_source_start",
-                message=f"Scanning source '{source_key}'",
-                base_url=url,
-            )
-
-            try:
-                records = scan_pds_products_in_directory(
-                    url,
-                    session=session,
-                    progress_callback=progress_callback,
-                )
-            except Exception as exc:
-                _emit_progress(
-                    progress_callback,
-                    stage="global_scan_source_error",
-                    message=f"Source '{source_key}' failed: {exc}",
-                    base_url=url,
-                )
-                continue
-
-            added = 0
-            for r in records:
-                img_url = str(r.get("img_url", ""))
-                if not img_url or img_url in seen_img_urls:
-                    continue
-                seen_img_urls.add(img_url)
-                rr = dict(r)
-                rr["source"] = source_key
-                global_catalog.append(rr)
-                added += 1
-
-            _emit_progress(
-                progress_callback,
-                stage="global_scan_source_done",
-                message=f"Source '{source_key}': +{added} items",
-                current=len(global_catalog),
-                total=None,
-                base_url=url,
-            )
-
-        _emit_progress(
-            progress_callback,
-            stage="global_scan_done",
-            message=f"Global catalog built: {len(global_catalog)} items",
-            current=len(global_catalog),
-            total=len(global_catalog),
-        )
-        return global_catalog
-    finally:
-        if own_session:
-            session.close()
 
 
 # ============================================================
@@ -848,6 +360,16 @@ _ROVER_CSV_ROWS_CACHE: Optional[list[dict[str, Any]]] = None
 _ROVER_CSV_ROVER_ROWS_CACHE: Optional[list[dict[str, Any]]] = None
 _ROVER_CSV_INDEX_CACHE: Optional[dict[str, Any]] = None
 _ROVER_CSV_CACHE_KEY: str = ""
+# Guards the check-then-rebuild sequence below: the cache is 4 separate
+# module globals updated one at a time, not one atomic value. Product
+# processing is sequential today so this has never actually raced, but
+# without this lock, two threads both finding the cache stale at the same
+# time would rebuild it concurrently and could interleave their writes to
+# these 4 globals -- e.g. one thread's fresh INDEX_CACHE paired with
+# another's stale CACHE_KEY -- silently corrupting rover-position matches
+# for whichever caller reads it in between. Cheap to hold since a rebuild
+# only happens when the CSV path/mtime actually changes.
+_ROVER_CSV_LOCK = threading.Lock()
 
 
 def _build_rover_rows_index(rover_rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -922,21 +444,33 @@ def _load_rover_csv_cached(csv_path: str | Path) -> list[dict[str, Any]]:
         key = f"{str(p.resolve())}:{st.st_mtime:.6f}:{st.st_size}"
     except Exception:
         key = str(p)
-    if _ROVER_CSV_ROWS_CACHE is not None and _ROVER_CSV_CACHE_KEY == key:
-        return _ROVER_CSV_ROWS_CACHE
-    rows = load_rover_csv(p)
-    _ROVER_CSV_ROWS_CACHE = rows
-    try:
-        rover_rows = [r for r in rows if str(r.get("frame", "")).upper() == "ROVER"]
-    except Exception:
-        rover_rows = rows
-    _ROVER_CSV_ROVER_ROWS_CACHE = rover_rows
-    _ROVER_CSV_INDEX_CACHE = _build_rover_rows_index(rover_rows)
-    _ROVER_CSV_CACHE_KEY = key
-    return rows
+    with _ROVER_CSV_LOCK:
+        if _ROVER_CSV_ROWS_CACHE is not None and _ROVER_CSV_CACHE_KEY == key:
+            return _ROVER_CSV_ROWS_CACHE
+        rows = load_rover_csv(p)
+        try:
+            rover_rows = [r for r in rows if str(r.get("frame", "")).upper() == "ROVER"]
+        except Exception:
+            rover_rows = rows
+        index = _build_rover_rows_index(rover_rows)
+        # Assign only once everything is built, so a concurrent reader of
+        # these globals (_match_rover_row_fast) never observes a mix of one
+        # rebuild's rows with a different rebuild's index/key.
+        _ROVER_CSV_ROWS_CACHE = rows
+        _ROVER_CSV_ROVER_ROWS_CACHE = rover_rows
+        _ROVER_CSV_INDEX_CACHE = index
+        _ROVER_CSV_CACHE_KEY = key
+        return rows
 
 
 def _match_rover_row_fast(product: PdsProduct) -> tuple[Optional[dict[str, Any]], MatchInfo]:
+    """Look up `product`'s rover-position row using `_ROVER_CSV_INDEX_CACHE` instead of `metashape_engine.match_rover_row`'s linear scan.
+
+    Tries, in order: exact site+drive+pose (narrowed by Sol if ambiguous),
+    exact site+drive (ditto), nearest-sclk within site+drive (binary search
+    over a pre-sorted list), then a unique-Sol fallback. Returns `(row, info)`
+    -- `(None, ...)` if nothing matches uniquely.
+    """
     idx = _ROVER_CSV_INDEX_CACHE
     if not isinstance(idx, dict):
         return None, MatchInfo(strategy="none", gps_found=False, csv_refreshed=False, csv_match_count=0, frame=None)
@@ -1030,12 +564,17 @@ def refresh_rover_csv(
         output_path=rover_csv_local_path,
         session=session,
     )
-    # Invalidate cached rows (the file may have changed).
+    # Invalidate cached rows (the file may have changed). Same lock as
+    # _load_rover_csv_cached's check-then-rebuild: without it, a concurrent
+    # reader could observe these 4 globals mid-clear (e.g. a fresh
+    # _ROVER_CSV_ROWS_CACHE paired with an already-nulled _ROVER_CSV_INDEX_CACHE),
+    # which _match_rover_row_fast reads directly with no lock of its own.
     global _ROVER_CSV_ROWS_CACHE, _ROVER_CSV_ROVER_ROWS_CACHE, _ROVER_CSV_INDEX_CACHE, _ROVER_CSV_CACHE_KEY
-    _ROVER_CSV_ROWS_CACHE = None
-    _ROVER_CSV_ROVER_ROWS_CACHE = None
-    _ROVER_CSV_INDEX_CACHE = None
-    _ROVER_CSV_CACHE_KEY = ""
+    with _ROVER_CSV_LOCK:
+        _ROVER_CSV_ROWS_CACHE = None
+        _ROVER_CSV_ROVER_ROWS_CACHE = None
+        _ROVER_CSV_INDEX_CACHE = None
+        _ROVER_CSV_CACHE_KEY = ""
     return out
 
 
@@ -1679,6 +1218,11 @@ def decode_img_bytes_to_jpg_bytes(
     3. derives GPS fields from csv_row if available
     4. writes a minimal, clean EXIF block for Metashape
     5. returns final JPG bytes
+
+    Also decides, via `_matches_mastcam_apply_rule(product)`, whether to run
+    the Mastcam Bayer-demosaic pipeline on grayscale decodes before encoding
+    -- returns `(jpg_bytes, exif_written, processing_info)`, where
+    `processing_info` records that decision for the product's `.meta.json`.
     """
     decoded = _decode_pds_image_array(img_bytes, lbl_text)
 
@@ -1824,11 +1368,20 @@ def process_single_product(
     """
     warnings: list[str] = []
     errors: list[str] = []
+    timing_started = time.perf_counter()
+    timings: dict[str, float] = {}
 
     own_session = session is None
     session = session or _session_with_retries()
     fallback_product_id = Path(img_url).stem
     output_dir_p = Path(output_dir)
+    # Populated as soon as the LBL is parsed. If a later step (IMG download,
+    # decode, ...) fails, the except block below prefers this over a blank
+    # fallback so the error meta.json lands under the same product_id a
+    # successful retry would use (LBL PRODUCT_ID can differ from the URL's
+    # filename stem), and keeps the real sol/site/drive/pose instead of
+    # nulling out fields the engine had already recovered.
+    product: Optional[PdsProduct] = None
 
     try:
         _emit_progress(
@@ -1841,8 +1394,11 @@ def process_single_product(
             base_url=base_url,
         )
 
+        phase_started = time.perf_counter()
         lbl_path = output_dir_p / Path(lbl_url).name if lbl_url else None
+        lbl_source = "network"
         if lbl_path is not None and lbl_path.exists() and lbl_path.stat().st_size > 0:
+            lbl_source = "cache"
             _emit_progress(
                 progress_callback,
                 stage="download_lbl",
@@ -1855,13 +1411,17 @@ def process_single_product(
             lbl_text = lbl_path.read_text(encoding="utf-8", errors="ignore")
         else:
             lbl_text = fetch_text(lbl_url, session=session) if lbl_url else ""
+        timings["lbl_load"] = time.perf_counter() - phase_started
+        timings[f"lbl_{lbl_source}"] = timings["lbl_load"]
 
+        phase_started = time.perf_counter()
         product = build_product_from_lbl(
             lbl_text,
             img_url=img_url,
             lbl_url=lbl_url or "",
             base_url=base_url,
         )
+        timings["metadata_parse"] = time.perf_counter() - phase_started
 
         _emit_progress(
             progress_callback,
@@ -1885,12 +1445,14 @@ def process_single_product(
             base_url=base_url,
         )
 
+        phase_started = time.perf_counter()
         csv_row, match_info, _rows = match_rover_row_with_refresh(
             product=product,
             rover_csv_url=rover_csv_url,
             rover_csv_local_path=rover_csv_local_path,
             session=session,
         )
+        timings["localization"] = time.perf_counter() - phase_started
 
         if csv_row is None:
             warnings.append(
@@ -1926,8 +1488,11 @@ def process_single_product(
             base_url=base_url,
         )
 
+        phase_started = time.perf_counter()
         img_path = output_dir_p / Path(img_url).name if img_url else None
+        img_source = "network"
         if img_path is not None and img_path.exists() and img_path.stat().st_size > 0:
+            img_source = "cache"
             _emit_progress(
                 progress_callback,
                 stage="download_img",
@@ -1940,6 +1505,8 @@ def process_single_product(
             img_bytes = img_path.read_bytes()
         else:
             img_bytes = fetch_bytes(img_url, session=session)
+        timings["img_load"] = time.perf_counter() - phase_started
+        timings[f"img_{img_source}"] = timings["img_load"]
 
         _emit_progress(
             progress_callback,
@@ -1951,12 +1518,14 @@ def process_single_product(
             base_url=base_url,
         )
 
+        phase_started = time.perf_counter()
         jpg_bytes, exif_written, processing_info = decode_img_bytes_to_jpg_bytes(
             img_bytes=img_bytes,
             lbl_text=lbl_text,
             csv_row=csv_row,
             product=product,
         )
+        timings["decode"] = time.perf_counter() - phase_started
 
         _emit_progress(
             progress_callback,
@@ -1968,8 +1537,10 @@ def process_single_product(
             base_url=base_url,
         )
 
+        phase_started = time.perf_counter()
         _ensure_parent_dir(output_jpg_path)
         Path(output_jpg_path).write_bytes(jpg_bytes)
+        timings["jpg_write"] = time.perf_counter() - phase_started
 
         _emit_progress(
             progress_callback,
@@ -1981,6 +1552,7 @@ def process_single_product(
             base_url=base_url,
         )
 
+        phase_started = time.perf_counter()
         meta_payload = build_meta_payload(
             product=product,
             lbl_text=lbl_text,
@@ -1999,6 +1571,17 @@ def process_single_product(
         )
         meta_payload["post_processing"] = processing_info
         write_meta_json(meta_payload, output_meta_path)
+        timings["metadata_write"] = time.perf_counter() - phase_started
+        timings["engine_total"] = time.perf_counter() - timing_started
+
+        _emit_progress(
+            progress_callback,
+            stage="timing",
+            message=f"Processing timing collected for: {product.product_id}",
+            product_id=product.product_id,
+            timings=timings,
+            io_sources={"lbl": lbl_source, "img": img_source},
+        )
 
         status = "ok" if csv_row is not None else "ok_with_missing_gps"
 
@@ -2025,7 +1608,12 @@ def process_single_product(
         )
 
     except Exception as exc:
-        fallback_product = PdsProduct(
+        # If the LBL was already parsed before this failure (e.g. the IMG
+        # download or decode step raised), reuse that real product instead
+        # of a blank one -- same product_id a successful retry would derive
+        # (LBL PRODUCT_ID can differ from the URL's filename stem), and the
+        # sol/site/drive/pose the engine had already recovered.
+        fallback_product = product if product is not None else PdsProduct(
             product_id=fallback_product_id,
             image_id=None,
             instrument_id=None,
@@ -2049,8 +1637,8 @@ def process_single_product(
         _emit_progress(
             progress_callback,
             stage="error",
-            message=f"Failed product: {fallback_product_id} | {exc}",
-            product_id=fallback_product_id,
+            message=f"Failed product: {fallback_product.product_id} | {exc}",
+            product_id=fallback_product.product_id,
             img_url=img_url,
             lbl_url=lbl_url,
             base_url=base_url,
@@ -2204,134 +1792,3 @@ def process_products_from_catalog(
         session.close()
 
 
-def process_products_from_base_url(
-    *,
-    base_url: str,
-    output_dir: str | Path,
-    rover_csv_url: str,
-    rover_csv_local_path: str | Path,
-    engine_version: str = "0.1.0",
-    progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
-) -> list[EngineResult]:
-    """
-    Scans a PDS base URL recursively, builds a catalog of IMG or LBL products,
-    and processes all of them.
-
-    This is the highest-level batch entry point of the current engine.
-    It is the most natural function for the future dashboard to call when
-    the user wants to process a whole directory tree.
-    """
-    session = _session_with_retries()
-    try:
-        catalog = scan_pds_products_recursive(
-            base_url,
-            session=session,
-            progress_callback=progress_callback,
-        )
-    finally:
-        session.close()
-
-    return process_products_from_catalog(
-        catalog=catalog,
-        output_dir=output_dir,
-        rover_csv_url=rover_csv_url,
-        rover_csv_local_path=rover_csv_local_path,
-        engine_version=engine_version,
-        progress_callback=progress_callback,
-    )
-
-
-# ============================================================
-# Catalog helpers
-# ============================================================
-
-def build_catalog_from_base_url(
-    base_url: str,
-    session: Optional[requests.Session] = None,
-    progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
-) -> list[dict[str, Any]]:
-    """
-    Builds an in-memory catalog of PDS products from a base URL.
-
-    This is a thin wrapper around the recursive scanner and exists to make the
-    intent explicit at the API level.
-
-    Each catalog record contains:
-    - base_url
-    - img_url
-    - lbl_url
-    """
-    return scan_pds_products_recursive(
-        base_url,
-        session=session,
-        progress_callback=progress_callback,
-    )
-
-
-def write_catalog_json(
-    catalog: list[dict[str, Any]],
-    output_path: str | Path,
-) -> Path:
-    """
-    Writes a catalog of PDS products to a JSON file.
-
-    The catalog is written as a JSON array, one object per product.
-    This is useful for:
-    - debugging
-    - previewing what will be processed
-    - future dashboard ingestion
-    - reproducible batch runs
-    """
-    output_path = Path(output_path)
-    _ensure_parent_dir(output_path)
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(catalog, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-
-    return output_path
-
-
-def build_and_write_catalog_from_base_url(
-    *,
-    base_url: str,
-    output_path: str | Path,
-    progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
-) -> Path:
-    """
-    Scans a PDS base URL recursively, builds the product catalog,
-    and writes it to disk as JSON.
-
-    This function is intentionally separate from product processing.
-    It allows the caller to inspect or persist the download plan before
-    launching the full pipeline.
-    """
-    _emit_progress(
-        progress_callback,
-        stage="catalog_start",
-        message=f"Starting catalog build from: {base_url}",
-        base_url=base_url,
-    )
-
-    session = _session_with_retries()
-    try:
-        catalog = build_catalog_from_base_url(
-            base_url,
-            session=session,
-            progress_callback=progress_callback,
-        )
-    finally:
-        session.close()
-
-    out = write_catalog_json(catalog, output_path)
-
-    _emit_progress(
-        progress_callback,
-        stage="catalog_written",
-        message=f"Catalog written to: {out}",
-        current=len(catalog),
-        total=len(catalog),
-        base_url=base_url,
-    )
-
-    return out

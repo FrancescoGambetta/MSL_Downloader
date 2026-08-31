@@ -1,3 +1,5 @@
+"""Filename -> camera folder-name classification, used by the output organizer and the download pipeline."""
+
 from __future__ import annotations
 
 import re
@@ -6,6 +8,8 @@ from typing import Any, Callable
 
 
 class CameraNamingService:
+    """Wraps `camera_folder_for_filename`, the sole filename -> camera-folder classifier used across the app."""
+
     def __init__(
         self,
         *,
@@ -14,6 +18,7 @@ class CameraNamingService:
         self._normalize_text = normalize_text
 
     def camera_folder_for_filename(self, filename: str) -> str:
+        """Infer which camera produced `filename` from its name/prefix, returning a folder label (NAV/HAZ/MAHLI/MARDI/MASTCAM/CHEMCAM/TRAV) or "" if unrecognized."""
         up = self._normalize_text(filename).upper()
         stem = Path(up).stem
         if re.search(r"^\d{4}MH", stem):
@@ -33,4 +38,3 @@ class CameraNamingService:
         if re.search(r"^\d{4}M[LR]", stem) or "MASTCAM" in up:
             return "MASTCAM"
         return ""
-

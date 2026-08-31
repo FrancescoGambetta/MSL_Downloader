@@ -1,3 +1,18 @@
+"""Catalog facade: camera_rules.json loading, filtering, and dataframe cleanup.
+
+Thin wrapper over `services/catalog_*_service.py`, following the same
+lazy-singleton pattern as `actions.py` (see that module's docstring). The
+non-obvious piece here is `camera_rules.json`: it's the single source of
+truth for "which product type/level combo counts as the real image for
+camera X" (used both by the live app's filtering, via this module, and by
+the catalog builders in `core/`, via `_record_is_allowed`), and both cached
+loaders below key their `st.cache_data` cache on the file's mtime -- without
+that, editing camera_rules.json while the app is running would have no
+effect until a full restart (Streamlit's cache_data ignores
+underscore-prefixed args, so a naive `_path` parameter used to defeat this
+silently; see the comments on the two `_load_*_cached` functions).
+"""
+
 from __future__ import annotations
 
 import re
@@ -10,14 +25,10 @@ import streamlit as st
 from services.catalog_filter_service import CatalogFilterService
 from services.catalog_dataframe_ops_service import CatalogDataframeOpsService
 from services.catalog_apply_filters_service import CatalogApplyFiltersService
-from services.catalog_analytics_service import CatalogAnalyticsService
 from services.catalog_rules_service import CatalogRulesService
 from runtime import (
-    _resolve_selection_store,
-    load_json,
     normalize_text,
     persist_selection_from_filtered,
-    save_selected_row_ids,
 )
 
 _T: Callable[..., str] = lambda key, **kwargs: key.format(**kwargs) if kwargs else key
@@ -26,7 +37,6 @@ _CATALOG_RULES_SERVICE: CatalogRulesService | None = None
 _CATALOG_FILTER_SERVICE: CatalogFilterService | None = None
 _CATALOG_DF_OPS_SERVICE: CatalogDataframeOpsService | None = None
 _CATALOG_APPLY_FILTERS_SERVICE: CatalogApplyFiltersService | None = None
-_CATALOG_ANALYTICS_SERVICE: CatalogAnalyticsService | None = None
 
 
 def set_translator(fn: Callable[..., str]) -> None:
@@ -79,17 +89,8 @@ def _get_catalog_apply_filters_service() -> CatalogApplyFiltersService:
     return _CATALOG_APPLY_FILTERS_SERVICE
 
 
-def _get_catalog_analytics_service() -> CatalogAnalyticsService:
-    global _CATALOG_ANALYTICS_SERVICE
-    if _CATALOG_ANALYTICS_SERVICE is None:
-        _CATALOG_ANALYTICS_SERVICE = CatalogAnalyticsService(
-            normalize_text=normalize_text,
-            norm_ascii=_norm_ascii,
-        )
-    return _CATALOG_ANALYTICS_SERVICE
-
-
 def _norm_ascii(text: str) -> str:
+    """Lowercase `text` and fold common Latin/German accented characters to their ASCII base letter."""
     return (
         text.lower()
         .replace("à", "a").replace("á", "a").replace("â", "a").replace("ä", "a")
@@ -110,6 +111,10 @@ def _deep_merge(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
     return _get_catalog_rules_service().deep_merge(dst, src)
 
 
+# Built-in fallback used when config/camera_rules.json is missing/invalid --
+# defines, per camera, which product-type/processing-level combination is
+# treated as "the real image" (as opposed to raw intermediates, thumbnails,
+# etc.) for both PDS and RAW Archive sources.
 _CAMERA_RULES_FALLBACK: dict[str, Any] = {
     "raw_global_rules": {
         "drop_filename_contains_any": ["THUMBNAIL"],
@@ -186,7 +191,12 @@ _CAMERA_ALIAS_DEFAULTS: dict[str, list[str]] = {
 
 
 @st.cache_data(show_spinner=False)
-def _load_camera_rules_cached(_mtime: float) -> dict[str, Any]:
+def _load_camera_rules_cached(mtime: float) -> dict[str, Any]:
+    # NOTE: the cache-busting argument must NOT start with "_" -- Streamlit's
+    # st.cache_data explicitly excludes underscore-prefixed parameters from
+    # the cache key hash, which used to silently defeat this exact mtime
+    # check (editing camera_rules.json while the app was running had zero
+    # effect until a full process restart).
     return _get_catalog_rules_service().load_camera_rules_from_path(
         fallback=_CAMERA_RULES_FALLBACK,
         path=_camera_rules_path(),
@@ -194,6 +204,7 @@ def _load_camera_rules_cached(_mtime: float) -> dict[str, Any]:
 
 
 def load_camera_rules() -> dict[str, Any]:
+    """Return config/camera_rules.json merged over the built-in fallback, re-read whenever the file's mtime changes."""
     p = _camera_rules_path()
     try:
         mtime = float(p.stat().st_mtime) if p.exists() else 0.0
@@ -215,85 +226,29 @@ def _compact_ascii(text: str) -> str:
 
 
 @st.cache_data(show_spinner=False)
-def load_compiled_camera_rules() -> dict[str, Any]:
-    raw = load_camera_rules()
+def _load_compiled_camera_rules_cached(mtime: float) -> dict[str, Any]:
+    # Same file-state-token requirement as _load_camera_rules_cached above:
+    # this had zero arguments before, so it never recompiled after the first
+    # call in a running process, regardless of camera_rules.json changing.
+    raw = _load_camera_rules_cached(mtime)
     return _get_catalog_rules_service().compile_camera_rules(
         raw,
         camera_alias_defaults=_CAMERA_ALIAS_DEFAULTS,
     )
 
 
-def _normalize_camera_key(text: str) -> str:
-    return _norm_ascii(text)
-
-
-def _parse_cameras(text: str, available: list[str]) -> list[str]:
-    cmd = _norm_ascii(text)
-    available_norm = { _norm_ascii(c): c for c in available if normalize_text(c) }
-    if not available_norm:
-        return []
-    if any(re.search(rf"\b{re.escape(w)}\b", cmd) for w in ("all", "tutte", "tutti", "tutto", "toutes", "todos", "alle")):
-        return [available_norm[k] for k in sorted(available_norm)]
-    picked: list[str] = []
-    for norm_key, orig in available_norm.items():
-        if re.search(rf"\b{re.escape(norm_key)}\b", cmd):
-            picked.append(orig)
-    return picked
-
-
-def _wants_all_cameras(text: str) -> bool:
-    cmd = _norm_ascii(text)
-    return bool(re.search(r"\b(?:all|tutte|tutti|tutto|toutes|todos|alle)\b", cmd))
-
-
-def _parse_dr_variants(text: str) -> list[str]:
-    cmd = _norm_ascii(text)
-    out: list[str] = []
-    for tok in ("drcl", "drcx", "drxx", "edr", "rdr"):
-        if re.search(rf"\b{tok}\b", cmd):
-            out.append(tok.upper())
-    return out
-
-
-def _parse_size_bytes_from_text(text: str) -> Optional[int]:
-    t = text.lower().replace(",", ".")
-    m = re.search(r"(\d+(?:\.\d+)?)\s*(kb|mb|gb|b)\b", t, re.IGNORECASE)
-    if not m:
-        m = re.search(r"(?:>=|>|min(?:imum)?|almeno|piu grandi di|piu grande di)\s*(\d{3,})\b", t, re.IGNORECASE)
-        if m:
-            try:
-                return int(float(m.group(1)))
-            except Exception:
-                return None
-        return None
+def load_compiled_camera_rules() -> dict[str, Any]:
+    """Return `load_camera_rules()` pre-compiled into the flat per-camera-key matcher list the filter service consumes."""
+    p = _camera_rules_path()
     try:
-        value = float(m.group(1))
+        mtime = float(p.stat().st_mtime) if p.exists() else 0.0
     except Exception:
-        return None
-    unit = m.group(2).lower()
-    if unit == "kb":
-        return int(value * 1024)
-    if unit == "mb":
-        return int(value * 1024 * 1024)
-    if unit == "gb":
-        return int(value * 1024 * 1024 * 1024)
-    return int(value)
-
-
-def _is_camera_list_request(text: str) -> bool:
-    cmd = _norm_ascii(text)
-
-    def _has_any(words: list[str]) -> bool:
-        return any(re.search(rf"\b{re.escape(w)}\b", cmd) for w in words)
-
-    camera_words = ["camera", "cameras", "camere", "camara", "camaras", "kamera", "kameras", "instrument", "instruments"]
-    list_words = ["list", "lista", "elenco", "show", "mostra", "display", "which", "quali", "what", "dammi", "fammi"]
-    action_words = ["scaric", "download", "process", "convert", "organizz", "organize", "selezion", "select", "random", "casual", "sol", "kb", "mb"]
-    has_action = any(re.search(rf"\b{w}\w*\b", cmd) for w in action_words)
-    return _has_any(camera_words) and _has_any(list_words) and not has_action
+        mtime = 0.0
+    return _load_compiled_camera_rules_cached(mtime)
 
 
 def apply_filters(progress: Optional[Callable[[float, str], None]] = None) -> int:
+    """Load the catalog, apply `st.session_state["filters"]`, and store the resulting DataFrame back into session_state. Returns the row count."""
     return _get_catalog_apply_filters_service().apply_filters(st.session_state, progress=progress)
 
 
@@ -301,134 +256,20 @@ def _filters_cache_key(filters: dict[str, Any], token: str) -> str:
     return _get_catalog_apply_filters_service().filters_cache_key(filters, token)
 
 
-def selection_report() -> str:
-    return _get_catalog_analytics_service().selection_report(st.session_state, t=_T)
-
-
-def catalog_content_report(*, use_filtered: bool = True) -> str:
-    return _get_catalog_analytics_service().catalog_content_report(
-        st.session_state,
-        t=_T,
-        use_filtered=use_filtered,
-    )
-
-
-def camera_types_report() -> str:
-    return _get_catalog_analytics_service().camera_types_report(st.session_state, t=_T)
-
-
-def _query_uses_filtered_context(cmd: str) -> bool:
-    return _get_catalog_analytics_service().query_uses_filtered_context(cmd)
-
-
-def _query_uses_global_context(cmd: str) -> bool:
-    return _get_catalog_analytics_service().query_uses_global_context(cmd)
-
-
-def _filters_active() -> bool:
-    f = st.session_state.get("filters", {}) or {}
-    if f.get("sol_start") is not None or f.get("sol_end") is not None:
-        return True
-    if f.get("min_img_size") is not None:
-        return True
-    if bool(f.get("only_with_lbl")):
-        return True
-    if f.get("cameras"):
-        return True
-    if bool(f.get("source_pds", True)) is False or bool(f.get("source_raw", True)) is False:
-        return True
-    if f.get("dr_variants"):
-        return True
-    if f.get("name_tokens"):
-        return True
-    if f.get("file_prefixes"):
-        return True
-    if f.get("file_name_contains"):
-        return True
-    for k in (
-        "mastcam_only_drcl",
-        "mahli_only_drcl",
-        "mardi_only_e01_drcx",
-        "navcam_only_iltlf",
-        "hazcam_only_lb_edr",
-        "raw_mahli_legacy_subset",
-        "raw_reduce_bursts",
-    ):
-        if bool(f.get(k)):
-            return True
-    return False
-
-
-def analytics_use_filtered_scope(command: str) -> bool:
-    return _get_catalog_analytics_service().analytics_use_filtered_scope(
-        st.session_state,
-        command,
-        filters_active=_filters_active,
-    )
-
-
-def report_scope_text(*, use_filtered: bool) -> str:
-    return _get_catalog_analytics_service().report_scope_text(st.session_state, t=_T, use_filtered=use_filtered)
-
-
-def _count_query_camera_matches(cmd: str, available_cameras: list[str]) -> list[str]:
-    return _get_catalog_analytics_service().count_query_camera_matches(cmd, available_cameras)
-
-
-def _query_is_count(cmd: str) -> bool:
-    return _get_catalog_analytics_service().query_is_count(cmd)
-
-
-def _query_is_max_sol(cmd: str) -> bool:
-    return _get_catalog_analytics_service().query_is_max_sol(cmd)
-
-
-def is_analytics_query(command: str) -> bool:
-    return _get_catalog_analytics_service().is_analytics_query(command)
-
-
-def _parse_size_bytes_from_query(text: str) -> Optional[int]:
-    return _get_catalog_analytics_service().parse_size_bytes_from_query(text)
-
-
-
-
-def _parse_sol_range_from_query(text: str) -> tuple[Optional[int], Optional[int]]:
-    return _get_catalog_analytics_service().parse_sol_range_from_query(text)
-
-
 def deduplicate_with_source_priority(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop duplicate products across PDS/RAW sources, keeping the higher-priority source's row for each."""
     return _get_catalog_df_ops_service().deduplicate_with_source_priority(df)
 
 
 def reduce_raw_burst_sequences(df: pd.DataFrame, keep_per_group: int = 1) -> pd.DataFrame:
+    """Collapse RAW Archive burst sequences (many near-identical frames) down to `keep_per_group` rows per burst."""
     return _get_catalog_df_ops_service().reduce_raw_burst_sequences(df, keep_per_group=keep_per_group)
+
 
 def filter_dataframe(
     df: pd.DataFrame,
     filters: dict[str, Any],
     progress: Optional[Callable[[float, str], None]] = None,
 ) -> pd.DataFrame:
+    """Apply a `filters` dict (Sol range, cameras, source, min size, camera-rules...) to `df` and return the matching rows."""
     return _get_catalog_filter_service().filter_dataframe(df, filters, progress=progress)
-
-
-def _format_size_human(size_bytes: int) -> str:
-    return _get_catalog_analytics_service().format_size_human(size_bytes)
-
-
-def database_count_report(command: str, *, use_filtered: bool = False) -> str:
-    return _get_catalog_analytics_service().database_count_report(
-        st.session_state,
-        command,
-        t=_T,
-        use_filtered=use_filtered,
-    )
-
-
-def database_max_sol_report(command: str, *, use_filtered: bool = False) -> str:
-    return _get_catalog_analytics_service().database_max_sol_report(
-        st.session_state,
-        command,
-        t=_T,
-        use_filtered=use_filtered,
-    )

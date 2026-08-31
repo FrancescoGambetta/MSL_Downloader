@@ -1,3 +1,5 @@
+"""Matches Navcam/Hazcam ILT/RAD records to their MXYLF mask counterpart in the catalog, for optional alpha-channel/mask processing."""
+
 from __future__ import annotations
 
 from typing import Any, Callable, Optional
@@ -6,6 +8,8 @@ import pandas as pd
 
 
 class AlphaPairService:
+    """Builds a product_id -> MXYLF-mask lookup from the catalog and attaches pair info to matching records before download."""
+
     def __init__(
         self,
         *,
@@ -26,6 +30,13 @@ class AlphaPairService:
         state: dict[str, Any],
         reference_df: Optional[pd.DataFrame] = None,
     ) -> tuple[list[dict[str, Any]], int]:
+        """Attach `pair_product_id`/`pair_img_url`/`pair_lbl_url`/`pair_kind` to each Navcam/Hazcam ILTLF/ILT_F/RADLF record that has a matching MXYLF mask in `reference_df` (or `state["df"]`).
+
+        Returns `(records, paired_count)`. The pid -> mask lookup is built
+        once for the whole reference catalog and cached in `state` keyed on
+        `(id(reference_df), len(reference_df))`, since the cache is reused
+        across the several download/process calls in one session.
+        """
         if not records:
             return records, 0
 
@@ -75,6 +86,16 @@ class AlphaPairService:
         except Exception:
             pair_map = {}
         if not pair_map:
+            # Build the map for ALL navcam/hazcam MXYLF mask products in the
+            # reference catalog, not just this call's needed_mask_pids. The
+            # cache is keyed only on (id(ref), len(ref)) and reused across
+            # separate download batches within the same session (run_download/
+            # run_process/run_download_and_process_interleaved each call this).
+            # A previous version filtered the map down to the first call's
+            # needed_mask_pids, so a later batch asking for different masks
+            # (same catalog) would silently miss pairs that do exist in the
+            # catalog, just because they weren't needed the first time the
+            # cache was built.
             tmp = ref
             if "source" in tmp.columns:
                 src_s = tmp["source"].astype(str).str.strip().str.lower()
@@ -84,11 +105,6 @@ class AlphaPairService:
                 tmp = tmp[cam_s.isin(["navcam", "hazcam"])]
             pid_s = tmp["product_id"].astype(str)
             tmp = tmp[pid_s.str.contains("MXYLF", case=False, na=False)]
-            try:
-                pid_u = tmp["product_id"].astype(str).str.upper()
-                tmp = tmp[pid_u.isin(list(needed_mask_pids))]
-            except Exception:
-                pass
             tmp = tmp[tmp["img_url"].astype(str).str.len() > 0]
             has_lbl_col = "lbl_url" in tmp.columns
             pm: dict[str, dict[str, Any]] = {}

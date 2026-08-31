@@ -1,3 +1,19 @@
+"""Per-user session lifecycle: login/resume, last-state persistence, and background catalog preload.
+
+Each user gets a JSON file under `data/sessions/<normalized_name>.json`
+(`SessionStoreService`) recording their session history and the last UI
+state snapshot (`_snapshot_user_last_state`/`_restore_user_last_state`), so
+logging back in reopens the app roughly where they left it. Separately,
+`_kickoff_login_preload`/`_ensure_heavy_state` (via `SessionPreloadService`)
+start loading the (large) PDS+RAW catalog parquet files in a background
+thread as early as possible, so the first real page render doesn't have to
+wait for the full synchronous load.
+
+`init_state()` is called on every single script rerun by `app.py::ui_main`;
+its `if k not in st.session_state` seeding loop makes that safe -- each
+default is only ever written once per session.
+"""
+
 from __future__ import annotations
 
 import copy
@@ -117,6 +133,7 @@ def _now_utc_iso() -> str:
 
 
 def _start_user_session(display_name: str) -> tuple[str, str]:
+    """Start a brand-new session for `display_name` (the "New session" choice on the resume screen) and restore their last UI state."""
     user_norm, session_id = _get_session_store_service().start_user_session(display_name)
     st.session_state.show_help_popup = True
     st.session_state.help_popup_dismissed = False
@@ -129,6 +146,7 @@ def _get_latest_session_info(user_norm: str) -> Optional[dict[str, Any]]:
 
 
 def _resume_user_session(user_norm: str, display_name: str) -> tuple[str, str]:
+    """Resume `user_norm`'s existing session (the "Resume session" choice) and restore their last UI state."""
     user_norm, session_id = _get_session_store_service().resume_user_session(user_norm, display_name)
     st.session_state.show_help_popup = False
     _restore_user_last_state(user_norm)
@@ -272,6 +290,7 @@ def _save_user_last_state(reason: str = "") -> None:
 
 
 def _end_user_session() -> None:
+    """Log the current user out: mark the session ended in their session file and reset `current_view` to "login"."""
     _get_session_store_service().end_user_session(state=st.session_state)
 
 
@@ -296,14 +315,23 @@ def _preload_heavy_state_worker() -> None:
 
 
 def _kickoff_login_preload() -> None:
+    """Start the background catalog+intent-config preload thread, if it hasn't started yet (idempotent, safe to call every rerun)."""
     _get_session_preload_service().kickoff_login_preload()
 
 
 def _ensure_heavy_state() -> None:
+    """Block until the background preload (started by `_kickoff_login_preload`) has populated session_state with the loaded catalog, or load it synchronously if preload never ran."""
     _get_session_preload_service().ensure_heavy_state(st.session_state)
 
 
 def init_state(light_only: bool = False) -> None:
+    """Seed `st.session_state` with defaults (once per session) from persisted UI config + app_defaults.json.
+
+    Runs on every rerun but only ever writes a given key once, thanks to the
+    `if k not in st.session_state` guard below. Pass `light_only=True` to
+    skip the heavy catalog preload wait (`_ensure_heavy_state`) -- used
+    where only the cheap session defaults are needed.
+    """
     ui_cfg = load_app_ui_config()
     persisted_mode = normalize_text(ui_cfg.get("mode")) if isinstance(ui_cfg, dict) else ""
     persisted_theme_dark = normalize_text(ui_cfg.get("theme_dark")) if isinstance(ui_cfg, dict) else ""

@@ -1,3 +1,13 @@
+"""PDS label parsing, rover-CSV GPS matching, and .meta.json construction -- the pure-data half of the download/process engine (no I/O, no image decoding).
+
+`engine_pipeline.py` is the orchestrator that actually downloads files and
+writes JPGs; it calls into this module for everything else: parsing a
+`.LBL` into a `PdsProduct`, matching that product's Site/Drive/Pose (or
+SCLK, as a fallback) against the local rover-position CSV to find its GPS
+coordinates (`match_rover_row`), and building the final metadata payload
+(`build_meta_payload`) written alongside each output image.
+"""
+
 from __future__ import annotations
 
 import csv
@@ -430,12 +440,20 @@ def match_rover_row(product: PdsProduct, rows: list[dict[str, Any]]) -> tuple[Op
     # --------------------------------------------------------
     # 1. Strongest match: site + drive + pose
     # --------------------------------------------------------
-    strong = [
-        r for r in rover_rows
-        if r.get("site") == product.site
-        and r.get("drive") == product.drive
-        and r.get("pose") == product.pose
-    ]
+    # Products missing site/drive/pose (site is None etc.) must never be
+    # matched here: without this guard, `r.get("site") == product.site`
+    # would compare None == None and could spuriously "match" a CSV row
+    # that is equally incomplete, attaching a fabricated GPS position to a
+    # product that genuinely has no known location.
+    if product.site is not None and product.drive is not None and product.pose is not None:
+        strong = [
+            r for r in rover_rows
+            if r.get("site") == product.site
+            and r.get("drive") == product.drive
+            and r.get("pose") == product.pose
+        ]
+    else:
+        strong = []
 
     if len(strong) == 1:
         return strong[0], MatchInfo(
@@ -460,11 +478,16 @@ def match_rover_row(product: PdsProduct, rows: list[dict[str, Any]]) -> tuple[Op
     # --------------------------------------------------------
     # 2. Fallback: site + drive
     # --------------------------------------------------------
-    mid = [
-        r for r in rover_rows
-        if r.get("site") == product.site
-        and r.get("drive") == product.drive
-    ]
+    # Same None-guard as above: a product with unknown site/drive must not
+    # match a CSV row that also lacks them.
+    if product.site is not None and product.drive is not None:
+        mid = [
+            r for r in rover_rows
+            if r.get("site") == product.site
+            and r.get("drive") == product.drive
+        ]
+    else:
+        mid = []
 
     if len(mid) == 1:
         return mid[0], MatchInfo(

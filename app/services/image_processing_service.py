@@ -1,3 +1,16 @@
+"""Per-camera image post-processing: MARDI dewarp/crop, Mastcam RAW Bayer debayering, ChemCam TIFF->JPEG conversion, and Navcam/Hazcam alpha-mask compositing.
+
+Each camera family gets its own conversion path here because each one's
+source format and corrections are different: MARDI needs a lens-dewarp +
+crop applied to an already-decoded JPG; Mastcam RAW needs the actual Bayer
+demosaic (delegated to `core/mastcam_bayer_cli.py`, loaded lazily and
+never modified by this app -- see `load_mastcam_bayer_pipeline`); ChemCam
+PDS products are TIFF and need their own decode+16-bit-to-8-bit conversion
+path (`convert_chemcam_to_jpg`); and Navcam/Hazcam optionally get an RGBA
+composite built from their paired MXYLF alpha mask
+(`apply_alpha_pair_rgba_for_record`).
+"""
+
 from __future__ import annotations
 
 import importlib
@@ -8,6 +21,8 @@ from typing import Any, Callable, Optional
 
 
 class ImageProcessingService:
+    """Camera-specific post-download image processing: MARDI correction, Mastcam Bayer debayer, ChemCam conversion, alpha-pair compositing, RAW Archive EXIF/metadata."""
+
     def __init__(
         self,
         *,
@@ -29,12 +44,15 @@ class ImageProcessingService:
         self._mastcam_bayer_pipeline_error: str | None = None
 
     def mardi_geometric_correction_enabled(self, default_value: bool) -> bool:
+        """Whether MARDI images get the dewarp+crop correction applied (currently always `default_value` -- no live override)."""
         return bool(default_value)
 
     def mardi_side_by_side_enabled(self, default_value: bool) -> bool:
+        """Whether a corrected MARDI image also keeps the uncorrected original saved alongside it (`_orig`/`_corr` pair)."""
         return bool(default_value)
 
     def mardi_legacy_mode_enabled(self, default_value: bool) -> bool:
+        """Whether MARDI uses the legacy (uncorrected) product set (currently always `default_value` -- no live override)."""
         return bool(default_value)
 
     def apply_mardi_geometric_correction(
@@ -43,6 +61,13 @@ class ImageProcessingService:
         *,
         side_by_side: bool,
     ) -> tuple[bool, Optional[Path], Optional[Path], dict[str, Any]]:
+        """Apply an empirical lens-dewarp + border crop to a MARDI JPG in place (or save `_orig`/`_corr` copies if `side_by_side`).
+
+        This is a bilinear-resampled 2D barrel-distortion correction fit
+        empirically to MARDI's known curvature, not a photogrammetric camera
+        recalibration. Returns `(ok, saved_orig_path, saved_corr_path,
+        details_dict)` for `write_mardi_processing_metadata` to record.
+        """
         try:
             import numpy as np  # type: ignore
         except Exception:
@@ -137,6 +162,7 @@ class ImageProcessingService:
             return False, None, None, {}
 
     def write_mardi_processing_metadata(self, meta_path: Path, details: dict[str, Any]) -> None:
+        """Record `details` (from `apply_mardi_geometric_correction`) into the product's `.meta.json` under `mardi_processing`, so it's known to be already-corrected."""
         if not meta_path.exists() or not meta_path.is_file() or not details:
             return
         try:
@@ -152,6 +178,21 @@ class ImageProcessingService:
         except Exception:
             return
 
+    @staticmethod
+    def _mardi_correction_already_applied(meta_path: Path) -> bool:
+        """True once write_mardi_processing_metadata has already recorded a
+        correction for this product. apply_mardi_geometric_correction mutates
+        the JPG in place (or writes it fresh for side_by_side), so re-running
+        it on an already-corrected image would dewarp/crop it a second time
+        with no way to detect or undo it -- this is the guard against that."""
+        if not meta_path.exists() or not meta_path.is_file():
+            return False
+        try:
+            obj = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        return isinstance(obj, dict) and isinstance(obj.get("mardi_processing"), dict)
+
     def maybe_correct_mardi_products(
         self,
         records: list[dict[str, Any]],
@@ -160,6 +201,7 @@ class ImageProcessingService:
         enabled: bool,
         side_by_side: bool,
     ) -> tuple[int, int]:
+        """Apply `apply_mardi_geometric_correction` to every not-yet-corrected MARDI record's saved JPG in `records`. Returns `(corrected_count, extra_files_saved_count)`."""
         if not enabled:
             return 0, 0
         out_dir = Path(output_dir).expanduser()
@@ -173,7 +215,8 @@ class ImageProcessingService:
             if not product_id:
                 continue
             jpg = out_dir / f"{product_id}.jpg"
-            if jpg.exists() and jpg.is_file():
+            meta_path = out_dir / f"{product_id}.meta.json"
+            if jpg.exists() and jpg.is_file() and not self._mardi_correction_already_applied(meta_path):
                 ok, saved_orig, saved_corr, details = self.apply_mardi_geometric_correction(jpg, side_by_side=side_by_side)
                 if ok:
                     corrected += 1
@@ -183,11 +226,11 @@ class ImageProcessingService:
                     if saved_corr is not None and saved_corr != jpg:
                         self._track_saved_output_file(saved_corr.name)
                         saved_extras += 1
-                    meta_path = out_dir / f"{product_id}.meta.json"
                     self.write_mardi_processing_metadata(meta_path, details)
         return corrected, saved_extras
 
     def is_raw_archive_mastcam_record(self, rec: dict[str, Any], *, normalize_source: Callable[[Any], str]) -> bool:
+        """True if `rec` is a Mastcam RAW Archive image fetched from mars.nasa.gov's raw-images endpoint -- the only ones needing manual Bayer debayering."""
         src_ok = normalize_source(rec.get("source")) == "raw"
         cam_ok = self._norm_ascii(self._normalize_text(rec.get("camera"))).lower() == "mastcam"
         url = self._normalize_text(rec.get("img_url")).lower()
@@ -195,6 +238,12 @@ class ImageProcessingService:
         return bool(src_ok and cam_ok and raw_url_ok)
 
     def load_mastcam_bayer_pipeline(self) -> tuple[Any, Path] | tuple[None, None]:
+        """Lazily import `core.mastcam_bayer_cli` (never modified by this app) and build a cached `MastcamBayerPipeline` from `config/mastcam_bayer_config.json`.
+
+        Returns `(pipeline, config_path)`, cached for the life of the
+        process, or `(None, None)` on any import/config error (recorded in
+        `self._mastcam_bayer_pipeline_error`).
+        """
         if self._mastcam_bayer_pipeline_cache is not None:
             return self._mastcam_bayer_pipeline_cache, self._project_root / "config" / "mastcam_bayer_config.json"
 
@@ -246,6 +295,7 @@ class ImageProcessingService:
         output_dir: str | Path,
         normalize_source: Callable[[Any], str],
     ) -> tuple[bool, str]:
+        """Debayer a downloaded Mastcam RAW image in place via `load_mastcam_bayer_pipeline`. Returns `(applied, reason_or_error)`."""
         try:
             from PIL import Image  # type: ignore
         except Exception:
@@ -278,6 +328,7 @@ class ImageProcessingService:
             return False, f"processing_error:{exc}"
 
     def convert_jpg_to_png_keep_exif(self, jpg_path: Path) -> Optional[Path]:
+        """Convert `jpg_path` to a same-named `.png` (reused if it already exists and is non-empty), preserving EXIF where possible."""
         try:
             from PIL import Image  # type: ignore
         except Exception:
@@ -306,6 +357,7 @@ class ImageProcessingService:
             return None
 
     def finalize_product_jpg_only(self, out_dir: Path, product_id: str) -> None:
+        """Delete `<product_id>.png` if present, leaving `.jpg` as the sole canonical output (masks/RGBA `*_mask.png`/`*_rgba.png` are untouched -- only the bare product PNG is removed)."""
         pid = self._normalize_text(product_id)
         if not pid:
             return
@@ -316,7 +368,194 @@ class ImageProcessingService:
             except Exception:
                 return
 
+    def convert_chemcam_to_jpg(
+        self,
+        rec: dict[str, Any],
+        output_dir: str | Path,
+        *,
+        rover_csv_url: str = "",
+        rover_csv_local_path: str | Path = "",
+        engine_version: str = "app-0.1.0",
+    ) -> tuple[bool, str]:
+        """Convert a downloaded ChemCam RMI TIFF/PNG into the canonical JPG."""
+        camera = self._normalize_text(rec.get("camera")).strip().lower()
+        instrument = self._normalize_text(rec.get("instrument_id")).upper()
+        if camera != "chemcam" and "CHEMCAM" not in instrument:
+            return False, "not_chemcam"
+        try:
+            import numpy as np  # type: ignore
+            from PIL import Image  # type: ignore
+        except Exception:
+            return False, "pil_or_numpy_unavailable"
+
+        img_url = self._normalize_text(rec.get("img_url"))
+        if not img_url:
+            return False, "img_url_missing"
+        out_dir = Path(output_dir).expanduser()
+        source_path = out_dir / Path(img_url).name
+        if not source_path.exists() or not source_path.is_file():
+            return False, "downloaded_image_missing"
+        product_id = self._normalize_text(rec.get("product_id")) or source_path.stem
+        jpg_path = out_dir / f"{product_id}.jpg"
+        meta_path = out_dir / f"{product_id}.meta.json"
+
+        try:
+            with Image.open(source_path) as image:
+                arr = np.asarray(image)
+            was_uint16 = arr.dtype == np.uint16
+            if was_uint16:
+                # ChemCam RMI PDS TIFFs use the full unsigned 16-bit range.
+                arr = np.clip(np.rint(arr.astype(np.float32) / 257.0), 0, 255).astype(np.uint8)
+            elif arr.dtype != np.uint8:
+                finite = np.nan_to_num(arr.astype(np.float32), nan=0.0, posinf=255.0, neginf=0.0)
+                lo = float(finite.min())
+                hi = float(finite.max())
+                arr = np.zeros_like(finite, dtype=np.uint8) if hi <= lo else np.clip((finite - lo) * (255.0 / (hi - lo)), 0, 255).astype(np.uint8)
+            converted = Image.fromarray(arr)
+            if converted.mode not in {"L", "RGB"}:
+                converted = converted.convert("RGB")
+            converted.save(jpg_path, format="JPEG", quality=95, subsampling=0)
+            self._track_saved_output_file(jpg_path.name)
+
+            exif_written: dict[str, Any] = {}
+            product = None
+            csv_row = None
+            match_info = None
+            lbl_text = ""
+            is_pds = self._normalize_text(rec.get("source")).lower() == "pds"
+            lbl_url = self._normalize_text(rec.get("lbl_url"))
+            lbl_path = out_dir / Path(lbl_url).name if lbl_url else None
+            if is_pds and lbl_path is not None and lbl_path.exists():
+                from core.metashape_engine import (  # type: ignore
+                    build_product_from_lbl,
+                    load_rover_csv,
+                    match_rover_row,
+                )
+
+                lbl_text = lbl_path.read_text(encoding="utf-8", errors="ignore")
+                product = build_product_from_lbl(
+                    lbl_text=lbl_text,
+                    img_url=img_url,
+                    lbl_url=lbl_url,
+                    base_url=self._normalize_text(rec.get("base_url")) or self._normalize_text(rec.get("sol_url")) or None,
+                )
+                csv_path = Path(rover_csv_local_path).expanduser() if rover_csv_local_path else None
+                if csv_path is not None and csv_path.exists():
+                    csv_row, match_info = match_rover_row(product, load_rover_csv(csv_path))
+            try:
+                import piexif  # type: ignore
+                from core.default_camera_meta import defaults_for_record  # type: ignore
+                from core.engine_pipeline import _build_piexif_bytes_for_metashape  # type: ignore
+
+                defaults = defaults_for_record(
+                    camera="chemcam",
+                    instrument_id=self._normalize_text(rec.get("instrument_id")),
+                    product_id=product_id,
+                )
+                pixel_um = float(defaults["pixel_size_um"])
+                focal_plane_resolution = 10000.0 / pixel_um
+
+                def _float_or_none(value: Any) -> Optional[float]:
+                    try:
+                        return float(value) if value not in (None, "") else None
+                    except (TypeError, ValueError):
+                        return None
+
+                latitude = _float_or_none((csv_row or {}).get("planetocentric_latitude"))
+                longitude = _float_or_none((csv_row or {}).get("longitude"))
+                altitude = _float_or_none((csv_row or {}).get("elevation"))
+                exif_bytes = _build_piexif_bytes_for_metashape(
+                    focal_length_mm=None,
+                    focal_plane_x_resolution=focal_plane_resolution,
+                    focal_plane_y_resolution=focal_plane_resolution,
+                    focal_plane_resolution_unit=3,
+                    latitude=latitude,
+                    longitude=longitude,
+                    altitude=altitude,
+                )
+                piexif.insert(exif_bytes, str(jpg_path))
+                exif_written = {
+                    "PixelSizeMicrometers": pixel_um,
+                    "FocalPlaneXResolution": focal_plane_resolution,
+                    "FocalPlaneYResolution": focal_plane_resolution,
+                    "FocalPlaneResolutionUnit": 3,
+                    "calibration_kind": "chemcam_rmi_fixed_detector",
+                }
+                if latitude is not None:
+                    exif_written["GPSLatitude"] = latitude
+                if longitude is not None:
+                    exif_written["GPSLongitude"] = longitude
+                if altitude is not None:
+                    exif_written["GPSAltitude"] = altitude
+            except Exception:
+                exif_written = {}
+
+            meta: dict[str, Any] = {
+                "schema_version": 1,
+                "product_id": product_id,
+                "sol": int(rec["sol"]) if rec.get("sol") is not None else None,
+                "camera": "chemcam",
+                "source": self._normalize_text(rec.get("source")).lower(),
+                "instrument_id": self._normalize_text(rec.get("instrument_id")) or "CHEMCAM_RMI",
+                "image_id": self._normalize_text(rec.get("image_id")) or None,
+                "site": rec.get("site"),
+                "drive": rec.get("drive"),
+                "pose": rec.get("pose"),
+                "sclk": rec.get("sclk"),
+                "start_time": self._normalize_text(rec.get("start_time")) or None,
+                "image_url": img_url,
+                "label_url": self._normalize_text(rec.get("lbl_url")) or None,
+                "processing": {
+                    "kind": "chemcam_rmi_to_jpeg",
+                    "input_format": source_path.suffix.lower().lstrip("."),
+                    "uint16_mapping": "linear_divide_257" if was_uint16 else None,
+                },
+                "exif_written": exif_written,
+                "outputs": {"jpg_path": str(jpg_path), "meta_json_path": str(meta_path)},
+            }
+            if is_pds and product is not None and lbl_text:
+                from core.metashape_engine import MatchInfo, build_meta_payload  # type: ignore
+
+                if match_info is None:
+                    match_info = MatchInfo(
+                        strategy="none",
+                        gps_found=False,
+                        csv_refreshed=False,
+                        csv_match_count=0,
+                        frame=None,
+                    )
+                warnings = [] if csv_row is not None else [
+                    "No rover localisation row found. JPG created without GPS fields."
+                ]
+                meta = build_meta_payload(
+                    product=product,
+                    lbl_text=lbl_text,
+                    csv_row=csv_row,
+                    match_info=match_info,
+                    img_url=img_url,
+                    lbl_url=lbl_url,
+                    rover_csv_url=rover_csv_url,
+                    rover_csv_local_path=str(rover_csv_local_path),
+                    output_jpg=str(jpg_path),
+                    output_meta_json=str(meta_path),
+                    exif_written=exif_written,
+                    warnings=warnings,
+                    errors=[],
+                    engine_version=engine_version,
+                )
+                meta["post_processing"] = {
+                    "kind": "chemcam_rmi_to_jpeg",
+                    "input_format": source_path.suffix.lower().lstrip("."),
+                    "uint16_mapping": "linear_divide_257" if was_uint16 else None,
+                }
+            meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            self._track_saved_output_file(meta_path.name)
+            return True, "ok"
+        except Exception as exc:
+            return False, f"conversion_error:{exc}"
+
     def decode_pds_array(self, img_bytes: bytes, lbl_text: str) -> Optional[Any]:
+        """Decode a raw PDS `.IMG` byte string into a numpy array, delegating to `core.engine_pipeline._decode_pds_image_array`. None on any failure."""
         try:
             module = importlib.import_module("core.engine_pipeline")
             decoder = getattr(module, "_decode_pds_image_array", None)
@@ -339,6 +578,7 @@ class ImageProcessingService:
         alpha_nonzero: int,
         alpha_zero: int,
     ) -> None:
+        """Record the MXYLF alpha-pair mask result (`alpha_pair` + `post_processing.mxylf_alpha_*` fields) into a product's `.meta.json`."""
         if not meta_path.exists() or not meta_path.is_file():
             return
         try:
@@ -377,6 +617,12 @@ class ImageProcessingService:
         session: Any,
         record_product_id: Callable[[dict[str, Any]], str],
     ) -> tuple[bool, str]:
+        """Download `rec`'s paired MXYLF mask product, decode it, and save a `<product_id>_mask.png` alongside the already-downloaded base image.
+
+        The mask's own `.IMG`/`.LBL` are downloaded to a temp location and
+        deleted again in `finally` -- only the derived `_mask.png` and the
+        `.meta.json` annotation (`augment_meta_with_alpha_pair`) are kept.
+        """
         try:
             import numpy as np  # type: ignore
         except Exception:
@@ -476,6 +722,7 @@ class ImageProcessingService:
         record_product_id: Callable[[dict[str, Any]], str],
         progress_emit: Optional[Callable[[str], None]] = None,
     ) -> tuple[int, int]:
+        """Run `apply_alpha_pair_rgba_for_record` for every record in `records` that has a `pair_img_url` (attached earlier by `AlphaPairService`), sharing one HTTP session. Returns `(ok_count, skip_count)`."""
         candidates = [r for r in records if self._normalize_text(r.get("pair_img_url"))]
         if not candidates:
             return 0, 0
@@ -507,6 +754,14 @@ class ImageProcessingService:
         output_dir: Path,
         progress_emit: Optional[Callable[[str], None]] = None,
     ) -> tuple[int, int]:
+        """Write EXIF focal-length/focal-plane-resolution defaults (from `core.default_camera_meta`, keyed by camera/instrument) into RAW Archive JPGs, since RAW downloads carry no EXIF of their own.
+
+        These EXIF fields (particularly focal length) are what downstream
+        photogrammetry tools (Metashape) need to interpret the images;
+        without them RAW Archive photos can't be used for 3D reconstruction.
+        Skips files that already have a focal length set, or where no
+        default is known for that camera. Returns `(applied, skipped)`.
+        """
         if not records:
             return 0, 0
         try:
@@ -526,6 +781,9 @@ class ImageProcessingService:
             if not img_url:
                 continue
             p = output_dir / Path(img_url).name
+            if not p.exists():
+                pid_fallback = self._normalize_text(rec.get("product_id")) or Path(img_url).stem
+                p = output_dir / f"{pid_fallback}.jpg"
             if p.suffix.lower() not in {".jpg", ".jpeg"} or not p.exists():
                 continue
 
@@ -590,6 +848,14 @@ class ImageProcessingService:
         normalize_source: Callable[[Any], str],
         progress_emit: Optional[Callable[[str], None]] = None,
     ) -> tuple[int, int]:
+        """Write a `.meta.json` for each RAW Archive record, reusing the same builder (`core.metashape_engine.build_meta_payload`) PDS products use.
+
+        RAW Archive rows carry SCLK but not Sol directly, so this derives an
+        approximate Sol from SCLK (`_extract_sclk` + the linear SCLK-to-Sol
+        formula below) when the rover CSV lookup by Sol/site/drive doesn't
+        already resolve one. Skips files whose `.meta.json` already exists.
+        Returns `(written, skipped)`.
+        """
         if not records:
             return 0, 0
         try:

@@ -1,3 +1,12 @@
+"""The "First Time Here?" help overlay: loads Guida.md and renders it as an in-page popup.
+
+The overlay itself is injected via a small `<script>` (see
+`_render_help_overlay`) because it needs to live in the *parent* document
+(outside Streamlit's component iframe) to visually cover the whole app, and
+it remembers "closed" per user+session in the browser's `localStorage` so it
+doesn't reappear on every rerun once dismissed.
+"""
+
 from __future__ import annotations
 
 import json
@@ -35,6 +44,7 @@ APP_DIR = Path(__file__).resolve().parent
 
 
 def _load_help_guide_markdown(lang: str) -> str:
+    """Return the `<!-- lang:xx -->`-tagged section of Guida.md matching `lang`, falling back to it/en/whatever's first."""
     guide_path = APP_DIR / "Guida.md"
     if not guide_path.exists():
         return ""
@@ -51,6 +61,7 @@ def _load_help_guide_markdown(lang: str) -> str:
 
 
 def _help_markdown_to_html(md_text: str) -> str:
+    """Render `md_text` to HTML using the `markdown` package if installed, else a minimal built-in fallback (h1/h2, lists, paragraphs, inline code)."""
     raw = normalize_text(md_text)
     if not raw:
         return ""
@@ -116,6 +127,7 @@ def _help_markdown_to_html(md_text: str) -> str:
 
 
 def _render_help_overlay() -> None:
+    """Inject the help popup into the parent document via a tiny bootstrap script (see module docstring)."""
     guide_md = _load_help_guide_markdown(st.session_state.lang)
     guide_html = _help_markdown_to_html(guide_md) if guide_md else f"<p>{escape(t('help_dialog_intro'))}</p>"
     overlay_title = escape(t("help_dialog_title"))

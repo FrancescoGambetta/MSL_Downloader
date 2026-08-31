@@ -1,3 +1,13 @@
+"""Finds already-saved output files (JPG/PNG/.meta.json) on disk without repeatedly re-scanning the whole download folder.
+
+Two independent lookup mechanisms live here: `refresh_saved_output_files`
+(the small "recent files" list shown in the sidebar, bounded by a min-heap
+of the N newest files) and `ensure_output_file_index`/`resolve_output_files_
+for_product` (a fuller product_id -> file-path index used to display the
+viewport/metadata panel for a selected image, with an exact-name directory
+walk as a last-resort fallback when the index is stale or incomplete).
+"""
+
 from __future__ import annotations
 
 import heapq
@@ -8,6 +18,8 @@ from datetime import datetime
 
 
 class RuntimeOutputIndexService:
+    """Scans the download folder (bounded by dir/file budgets) to answer "what's already saved" and "where is product X's file" cheaply."""
+
     def __init__(
         self,
         *,
@@ -20,6 +32,7 @@ class RuntimeOutputIndexService:
         self._now = now
 
     def refresh_saved_output_files(self, state: dict[str, Any], *, limit: int = 400) -> None:
+        """Rebuild `state["saved_output_files"]`: the `limit` most-recently-modified images (by mtime, via a bounded min-heap, no full-directory sort)."""
         path = self._normalize_text(state.get("download_path", ""))
         if not path:
             state["saved_output_files"] = []
@@ -115,6 +128,7 @@ class RuntimeOutputIndexService:
         state["saved_output_files"] = names
 
     def output_bucket_roots(self, out: Path) -> list[Path]:
+        """Return the `PDS`/`RAW_PHOTOS` subfolders of `out` that exist, or `[out]` itself if neither does."""
         roots: list[Path] = []
         pds = out / "PDS"
         raw = out / "RAW_PHOTOS"
@@ -127,6 +141,7 @@ class RuntimeOutputIndexService:
         return roots
 
     def output_index_base_name(self, filename: str) -> str:
+        """Strip `filename` down to its product_id base (handles `.meta.json` specially, since `Path.stem` alone would only drop `.json`)."""
         name = self._normalize_text(filename)
         if not name:
             return ""
@@ -241,6 +256,7 @@ class RuntimeOutputIndexService:
         return out_state
 
     def index_note_new_file(self, state: dict[str, Any], out: Path, file_path: Path) -> None:
+        """Incrementally add one newly-saved file into the existing index (built by `ensure_output_file_index`), without a full rescan."""
         state_obj = self.ensure_output_file_index(state, out, force=False)
         index = state_obj.get("index")
         if not isinstance(index, dict):
@@ -308,6 +324,7 @@ class RuntimeOutputIndexService:
         return None
 
     def track_saved_output_file(self, state: dict[str, Any], filename: str) -> None:
+        """Prepend `filename` to `state["saved_output_files"]` (capped at 400) right after it's saved, and update the file index incrementally."""
         display = self._display_image_name_from_output_file(filename)
         if not display:
             return
@@ -329,6 +346,13 @@ class RuntimeOutputIndexService:
             self.index_note_new_file(state, out, candidate)
 
     def resolve_output_files_for_product(self, state: dict[str, Any], product_name: str) -> tuple[Optional[Path], Optional[Path]]:
+        """Locate `product_name`'s saved image and `.meta.json`, for the viewport/metadata panel.
+
+        Tries, in order: the exact expected path directly in the download
+        root; the file index (`ensure_output_file_index`, re-validated
+        against disk since the organizer can move files after indexing);
+        then an exact-name directory walk as a last resort.
+        """
         path = self._normalize_text(state.get("download_path", ""))
         if not path:
             return None, None
@@ -353,12 +377,21 @@ class RuntimeOutputIndexService:
             if isinstance(entry, dict):
                 if image_path is None and isinstance(entry.get("image"), tuple) and len(entry["image"]) >= 3:
                     try:
-                        image_path = Path(str(entry["image"][2]))
+                        candidate_image = Path(str(entry["image"][2]))
+                        # The index can go stale when a file is moved after being indexed
+                        # (e.g. by output_organizer's "organize by camera/sol"), which does
+                        # not update or invalidate this cache. Only trust the cached path if
+                        # it still points at a real file; otherwise fall through below so the
+                        # exact-name directory walk can find it at its new location.
+                        if candidate_image.exists() and candidate_image.is_file():
+                            image_path = candidate_image
                     except Exception:
                         image_path = None
                 if meta_path is None and isinstance(entry.get("meta"), tuple) and len(entry["meta"]) >= 2:
                     try:
-                        meta_path = Path(str(entry["meta"][1]))
+                        candidate_meta = Path(str(entry["meta"][1]))
+                        if candidate_meta.exists() and candidate_meta.is_file():
+                            meta_path = candidate_meta
                     except Exception:
                         meta_path = None
 

@@ -1,3 +1,5 @@
+"""The main image viewport: shows the currently selected image, or an empty-state placeholder."""
+
 from __future__ import annotations
 
 from html import escape
@@ -12,6 +14,7 @@ def render_viewport_panel(
     t: Callable[..., str],
     normalize_text: Callable[[Any], str],
 ) -> None:
+    """Render the selected image if its file still exists on disk, else an empty-state or "no preview available" message."""
     st.markdown(f'<div class="pane-title">{t("viewport_title")}</div>', unsafe_allow_html=True)
     selected = normalize_text(st.session_state.get("selected_image"))
     selected_image_path = normalize_text(st.session_state.get("selected_image_path"))

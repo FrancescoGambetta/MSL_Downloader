@@ -23,11 +23,15 @@
     }
   },
   "mahli": {
+    "notes": "Curated 2026-08-06: kept losslessly compressed (C) and JPEG (E) images, plus derived/focus-merge products (R/T), all as their real single suffix pairing. Thumbnails, video, and other minor formats were deliberately dropped -- not useful for photogrammetry. No size floor: some kept DRCL images are legitimately under 100KB.",
     "filter_key": "mahli_only_drcl",
     "rules": {
       "pds": {
-        "suffix_equals_any": ["DRCL"],
-        "min_img_size_bytes": 102400
+        "filename_contains_any": [
+          "C00_DRCL", "C01_DRCL", "C02_DRCL", "C03_DRCL", "C09_DRCL",
+          "E00_DRCL", "E01_DRCL", "E02_DRCL", "E03_DRCL", "E04_DRCL",
+          "R00_DRCX", "R00_DRXX", "T01_DRCX", "T01_DRXX"
+        ]
       },
       "raw": {
         "apply_when_filter_key": "raw_mahli_legacy_subset",
@@ -70,6 +74,13 @@
         "filename_contains_any": ["ILT_F", "MXYLF"],
         "min_img_size_bytes": 102400
       }
+    }
+  },
+  "chemcam": {
+    "notes": "ChemCam RMI products are already restricted to PRC images by the dedicated PDS and RAW catalog builders.",
+    "rules": {
+      "pds": {},
+      "raw": {}
     }
   }
 }

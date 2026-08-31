@@ -1,3 +1,13 @@
+"""The "⚙ Configurations" expander: appearance (mode/theme/language) and download-path settings.
+
+NOTE (found during live functional testing, not yet fixed -- flagged for
+the upcoming UI pass): the "Download path" text input inside this expander
+has a focus-trap issue where a parent element steals keyboard/programmatic
+focus, making it unreliable to drive via browser automation. Untested
+whether real users are affected; worth a manual click-test when this file
+gets its UI rework.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Callable, Sequence
@@ -21,11 +31,13 @@ def render_configurations_expander(
     mardi_geometric_correction_default: bool,
     mardi_geometric_side_by_side_default: bool,
 ) -> None:
+    """Render the Configurations expander: UI appearance settings (left column) and download-path settings (right column)."""
     with st.expander(f"⚙ {t('configurations_title')}", expanded=False):
         ui_cfg = load_app_ui_config()
         col_cfg_l, col_cfg_r = st.columns([1, 1], gap="small")
 
         def _render_ui_config(prefix: str) -> None:
+            """Render the mode/language/theme selectors and their "Save" button, in the left column. `prefix` namespaces the widget keys."""
             st.markdown(f"#### {t('config_section_ui_title')}")
             st.caption(t("config_section_ui_caption"))
 
@@ -88,6 +100,7 @@ def render_configurations_expander(
                 st.rerun()
 
         def _render_download_config() -> None:
+            """Render the download-path text field, folder-picker button, and "Save" button, in the right column."""
             st.markdown(f"#### {t('config_section_download_title')}")
             st.caption(t("config_section_download_caption"))
 

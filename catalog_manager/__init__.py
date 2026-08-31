@@ -1,0 +1,1 @@
+"""Catalog Manager Streamlit application."""

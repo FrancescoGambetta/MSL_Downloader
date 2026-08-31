@@ -1,12 +1,35 @@
+"""The three download/process workflows the builder UI can run, plus shared timing-diagnostics bookkeeping.
+
+- `run_download`: fetch the raw files only, no conversion.
+- `run_process`: convert files already on disk, no new downloads.
+- `run_download_and_process_interleaved`: download and convert each image
+  right after it lands (used by the builder's normal "run" button), so a
+  stopped/interrupted run still leaves fully-converted images behind
+  instead of a pile of raw downloads with nothing processed.
+
+All three share the same setup (resolve download path -> build the action
+DataFrame with min-size filtering -> attach alpha-pairs -> strip RAW
+.LBL -> split PDS/RAW by output bucket) and produce a human-readable
+multi-line summary string for the live log. Per-stage timing is
+accumulated into `timing_totals` and written to
+`processing_timing_diagnostics.json` in the output folder at the end of
+`run_process`/`run_download_and_process_interleaved`, for performance
+debugging.
+"""
+
 from __future__ import annotations
 
 import inspect
+import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 
 class DownloadProcessingService:
+    """Runs the download/process/download+process-interleaved workflows and reports a text summary + timing diagnostics for each."""
+
     def __init__(
         self,
         *,
@@ -21,6 +44,7 @@ class DownloadProcessingService:
         output_dir_for_source: Callable[[str | Path, str], Path],
         split_records_by_source: Callable[[list[dict[str, Any]]], tuple[list[dict[str, Any]], list[dict[str, Any]]]],
         split_records_by_lbl: Callable[[list[dict[str, Any]]], tuple[list[dict[str, Any]], list[dict[str, Any]]]],
+        filter_completed_records: Callable[[list[dict[str, Any]], str | Path], tuple[list[dict[str, Any]], int]],
         display_image_name_from_output_file: Callable[[str], str],
         track_saved_output_file: Callable[[str], None],
         load_json: Callable[[Path], dict[str, Any]],
@@ -41,6 +65,7 @@ class DownloadProcessingService:
         finalize_product_jpg_only: Callable[[Path, str], None],
         apply_raw_archive_hardcoded_exif: Callable[..., tuple[int, int]],
         write_raw_archive_meta: Callable[..., tuple[int, int]],
+        convert_chemcam_to_jpg: Callable[..., tuple[bool, str]],
     ) -> None:
         self._t = translator
         self._normalize_text = normalize_text
@@ -53,6 +78,7 @@ class DownloadProcessingService:
         self._output_dir_for_source = output_dir_for_source
         self._split_records_by_source = split_records_by_source
         self._split_records_by_lbl = split_records_by_lbl
+        self._filter_completed_records = filter_completed_records
         self._display_image_name_from_output_file = display_image_name_from_output_file
         self._track_saved_output_file = track_saved_output_file
         self._load_json = load_json
@@ -73,6 +99,74 @@ class DownloadProcessingService:
         self._finalize_product_jpg_only = finalize_product_jpg_only
         self._apply_raw_archive_hardcoded_exif = apply_raw_archive_hardcoded_exif
         self._write_raw_archive_meta = write_raw_archive_meta
+        self._convert_chemcam_to_jpg = convert_chemcam_to_jpg
+
+    @staticmethod
+    def _add_timing(target: dict[str, float], name: str, elapsed: float) -> None:
+        """Accumulate `elapsed` seconds into `target[name]` (negative values clamped to 0)."""
+        target[name] = target.get(name, 0.0) + max(0.0, float(elapsed))
+
+    @staticmethod
+    def _timing_report_lines(timings: dict[str, float], *, products: int) -> list[str]:
+        """Format the accumulated per-stage timings as human-readable summary lines (only stages that took measurable time, plus the total)."""
+        labels = {
+            "lbl_load": "LBL load/download",
+            "lbl_cache": "LBL read from local cache",
+            "lbl_network": "LBL downloaded by engine",
+            "metadata_parse": "LBL metadata parsing",
+            "localization": "Rover localization lookup",
+            "img_load": "IMG load/download",
+            "img_cache": "IMG read from local cache",
+            "img_network": "IMG downloaded by engine",
+            "decode": "IMG decode + image processing + JPEG encode",
+            "jpg_write": "JPG disk write",
+            "metadata_write": "Metadata build/write",
+            "engine_total": "PDS engine total",
+            "mastcam_bayer": "Mastcam RAW Bayer processing",
+            "alpha_pair": "Navcam/Hazcam alpha processing",
+            "mardi_correction": "MARDI geometric correction",
+            "raw_exif": "RAW EXIF writing",
+            "raw_metadata": "RAW metadata writing",
+            "parallel_download": "Parallel IMG/LBL download",
+            "chemcam_conversion": "ChemCam TIFF/PNG to JPEG",
+            "workflow_total": "Measured workflow total",
+        }
+        lines = [f"Processing timing diagnostics ({max(0, int(products))} products):"]
+        for key, label in labels.items():
+            value = float(timings.get(key, 0.0))
+            if value > 0.0005 or key == "workflow_total":
+                lines.append(f"- {label}: {value:.3f} s")
+        return lines
+
+    @staticmethod
+    def _save_timing_diagnostics(
+        output_dir: str | Path,
+        timings: dict[str, float],
+        *,
+        products: int,
+        workflow: str,
+        diagnostics: Optional[dict[str, Any]] = None,
+    ) -> Path:
+        """Write `timings` (+ optional extra `diagnostics`) to `<output_dir>/processing_timing_diagnostics.json`, atomically. Returns the written path."""
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        target = out / "processing_timing_diagnostics.json"
+        payload = {
+            "schema_version": 1,
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "workflow": workflow,
+            "products": max(0, int(products)),
+            "timings_seconds": {
+                str(name): round(max(0.0, float(value)), 6)
+                for name, value in timings.items()
+            },
+        }
+        if diagnostics:
+            payload["diagnostics"] = diagnostics
+        temp = target.with_suffix(target.suffix + ".tmp")
+        temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temp.replace(target)
+        return target
 
     def run_download(
         self,
@@ -86,6 +180,7 @@ class DownloadProcessingService:
         selection_df: Any = None,
         reference_df: Any = None,
     ) -> str:
+        """Download the selected records' raw files (PDS .IMG/.LBL or RAW .jpg) without converting/processing them. Returns a text summary."""
         ok_path, path = self._ensure_writable_download_path(requested_path)
         if not ok_path:
             return self._t("output_path_required")
@@ -249,6 +344,11 @@ class DownloadProcessingService:
         selection_df: Any = None,
         reference_df: Any = None,
     ) -> str:
+        """Convert/process records whose raw files are already on disk (no new downloads triggered). Returns a text summary + timing diagnostics."""
+        workflow_started = time.perf_counter()
+        timing_totals: dict[str, float] = {}
+        timing_products = 0
+        io_counts = {"lbl_cache": 0, "lbl_network": 0, "img_cache": 0, "img_network": 0}
         ok_path, path = self._ensure_writable_download_path(requested_path)
         if not ok_path:
             return self._t("output_path_required")
@@ -273,12 +373,29 @@ class DownloadProcessingService:
         rover_csv_url = self._normalize_text(cfg.get("coord_url"))
         rover_csv_local = (self._project_root / self._normalize_text(cfg.get("coord_local_path", "data/reference/geo/localized_interp_demv2.csv"))).resolve()
         def on_process_event(ev: dict[str, Any]) -> None:
+            nonlocal timing_products
             stage = self._normalize_text(ev.get("stage"))
             product_id = self._normalize_text(ev.get("product_id"))
             if stage == "write_jpg" and product_id:
                 self._track_saved_output_file(f"{product_id}.jpg")
             elif stage == "write_meta" and product_id:
                 self._track_saved_output_file(f"{product_id}.meta.json")
+            if stage == "timing":
+                raw_timings = ev.get("timings")
+                if isinstance(raw_timings, dict):
+                    timing_products += 1
+                    for name, value in raw_timings.items():
+                        try:
+                            self._add_timing(timing_totals, str(name), float(value))
+                        except (TypeError, ValueError):
+                            continue
+                io_sources = ev.get("io_sources")
+                if isinstance(io_sources, dict):
+                    for kind in ("lbl", "img"):
+                        source = self._normalize_text(io_sources.get(kind)).lower()
+                        key = f"{kind}_{source}"
+                        if key in io_counts:
+                            io_counts[key] += 1
             if not progress_emit:
                 return
             cur = ev.get("current")
@@ -317,8 +434,12 @@ class DownloadProcessingService:
                 total_processed += int(stats.get("total", 0))
                 total_ok += int(stats.get("ok", 0))
                 total_errors += int(stats.get("errors", 0))
+                phase_started = time.perf_counter()
                 self._maybe_correct_mardi_products(recs_with_lbl, out_dir)
+                self._add_timing(timing_totals, "mardi_correction", time.perf_counter() - phase_started)
+                phase_started = time.perf_counter()
                 a_ok, a_skip = self._apply_optional_alpha_pair_processing(recs_with_lbl, output_dir=out_dir, progress_emit=progress_emit)
+                self._add_timing(timing_totals, "alpha_pair", time.perf_counter() - phase_started)
                 alpha_pair_rgba_ok += int(a_ok)
                 alpha_pair_rgba_skipped += int(a_skip)
             if recs_without_lbl:
@@ -335,7 +456,9 @@ class DownloadProcessingService:
                             continue
                         img_path = out_dir / Path(img_url).name
                         if img_path.exists() and img_path.is_file():
+                            phase_started = time.perf_counter()
                             self._apply_mastcam_bayer_raw_processing(rec, out_dir)
+                            self._add_timing(timing_totals, "mastcam_bayer", time.perf_counter() - phase_started)
             if min_size_threshold > 0:
                 removed_small_by_min += int(self._enforce_global_min_output_size(out_dir, min_size_threshold))
             removed_small_mastcam += int(self._enforce_mastcam_min_output_size(out_dir))
@@ -359,6 +482,16 @@ class DownloadProcessingService:
         lines.append(f"Alpha pair candidates (navcam/hazcam): {paired_candidates}")
         lines.append(f"Alpha RGBA generated: {alpha_pair_rgba_ok}")
         lines.append(f"Alpha RGBA skipped/errors: {alpha_pair_rgba_skipped}")
+        self._add_timing(timing_totals, "workflow_total", time.perf_counter() - workflow_started)
+        lines.extend(self._timing_report_lines(timing_totals, products=timing_products or total_processed))
+        timing_path = self._save_timing_diagnostics(
+            path,
+            timing_totals,
+            products=timing_products or total_processed,
+            workflow="process",
+            diagnostics={"engine_io_counts": io_counts},
+        )
+        lines.append(f"- Timing diagnostics JSON: {timing_path}")
         return "\n".join(lines)
 
     def run_download_and_process_interleaved(
@@ -374,6 +507,20 @@ class DownloadProcessingService:
         selection_df: Any = None,
         reference_df: Any = None,
     ) -> str:
+        """Download and convert each selected record right after it lands (the builder's normal "run" path).
+
+        Records whose final output already exists are skipped up front
+        (`filter_completed_records`). All PDS/RAW records are pre-downloaded
+        in parallel first (`_download_records` with `workers=16`), then
+        processed one at a time in the main loop so `stop_requested_getter`
+        can interrupt between images and still leave a consistent set of
+        fully-converted outputs (never a half-downloaded, unconverted file).
+        Returns a text summary + timing diagnostics.
+        """
+        workflow_started = time.perf_counter()
+        timing_totals: dict[str, float] = {}
+        timing_products = 0
+        io_counts = {"lbl_cache": 0, "lbl_network": 0, "img_cache": 0, "img_network": 0}
         ok_path, path = self._ensure_writable_download_path(requested_path)
         if not ok_path:
             return self._t("output_path_required")
@@ -390,9 +537,26 @@ class DownloadProcessingService:
         records = self._records_from_dataframe(df, limit=None, require_lbl=False)
         records, paired_candidates = self._attach_optional_alpha_pairs(records, reference_df=reference_df)
         records = self._strip_lbl_for_raw_records(records)
+        selected_before_completed_filter = len(records)
+        records, completed_outputs_skipped = self._filter_completed_records(records, path)
         total = len(records)
+        if progress_emit:
+            progress_emit(
+                self._t(
+                    "progress_completed_output_scan",
+                    skipped=completed_outputs_skipped,
+                    pending=total,
+                )
+            )
         if total == 0:
-            return self._t("nothing_to_download_process")
+            return "\n".join(
+                [
+                    self._t("download_convert_summary_title"),
+                    self._t("download_convert_selected", value=selected_before_completed_filter),
+                    self._t("download_summary_already_complete", value=completed_outputs_skipped),
+                    self._t("download_summary_note_no_new"),
+                ]
+            )
         cfg = self._load_json(self._resolve_msl_config())
         rover_csv_url = self._normalize_text(cfg.get("coord_url"))
         rover_csv_local = (self._project_root / self._normalize_text(cfg.get("coord_local_path", "data/reference/geo/localized_interp_demv2.csv"))).resolve()
@@ -403,6 +567,60 @@ class DownloadProcessingService:
         alpha_pair_rgba_ok = 0
         alpha_pair_rgba_skipped = 0
         processed_images = 0
+        # Tracks RAW records whose meta.json was already written per-item in the
+        # loop below, so the batch call after the loop doesn't redo that work for
+        # them -- it used to unconditionally re-run on every raw_done record,
+        # which was harmless (write_raw_archive_meta skips a file that already
+        # exists) but wasted the EXIF-defaults/SCLK-to-Sol work a second time and
+        # made the final "written/skipped" summary misleading (already-written
+        # items counted as "skipped" as if something had been wrong with them).
+        raw_meta_written_urls: set[str] = set()
+
+        # Download the selected products concurrently before conversion. The engine
+        # then reuses these local files, preserving the existing processing path.
+        # Keep PDS and RAW separate because they use different output directories.
+        predownload_errors = 0
+        predownload_downloaded = 0
+        predownload_skipped = 0
+        predownload_started = time.perf_counter()
+        parallel_download_enabled = True
+        pds_to_download, raw_to_download = self._split_records_by_source(records)
+        download_batches = (
+            (("pds", pds_to_download), ("raw", raw_to_download))
+            if parallel_download_enabled
+            else ()
+        )
+        for source_name, source_records in download_batches:
+            if not source_records:
+                continue
+            if progress_emit:
+                progress_emit(f"Parallel download ({source_name.upper()}): 0/{len(source_records)} images")
+
+            def on_parallel_download_event(ev: dict[str, Any], *, source: str = source_name) -> None:
+                if not progress_emit:
+                    return
+                stage = self._normalize_text(ev.get("stage"))
+                if stage not in {"download_progress", "download_done"}:
+                    return
+                try:
+                    current = int(ev.get("current") or 0)
+                    count = int(ev.get("total") or len(source_records))
+                except (TypeError, ValueError):
+                    return
+                progress_emit(f"Parallel download ({source.upper()}): {current}/{count} images")
+
+            dl_stats = self._download_records(
+                source_records,
+                output_dir=str(self._output_dir_for_source(path, source_name)),
+                timeout=120,
+                skip_existing=True,
+                workers=16,
+                progress_callback=on_parallel_download_event,
+            )
+            predownload_errors += int(dl_stats.get("errors", 0))
+            predownload_downloaded += int(dl_stats.get("downloaded", 0))
+            predownload_skipped += int(dl_stats.get("skipped", 0))
+        self._add_timing(timing_totals, "parallel_download", time.perf_counter() - predownload_started)
 
         for idx, rec in enumerate(records, start=1):
             if stop_requested_getter():
@@ -417,12 +635,29 @@ class DownloadProcessingService:
                 progress_emit(self._t("progress_download_convert_running", name=img_name))
 
             def on_process_event(ev: dict[str, Any]) -> None:
+                nonlocal timing_products
                 stage = self._normalize_text(ev.get("stage"))
                 product_id = self._normalize_text(ev.get("product_id")) or Path(img_name).stem
                 if stage == "write_jpg" and product_id:
                     self._track_saved_output_file(f"{product_id}.jpg")
                 elif stage == "write_meta" and product_id:
                     self._track_saved_output_file(f"{product_id}.meta.json")
+                if stage == "timing":
+                    raw_timings = ev.get("timings")
+                    if isinstance(raw_timings, dict):
+                        timing_products += 1
+                        for name, value in raw_timings.items():
+                            try:
+                                self._add_timing(timing_totals, str(name), float(value))
+                            except (TypeError, ValueError):
+                                continue
+                    io_sources = ev.get("io_sources")
+                    if isinstance(io_sources, dict):
+                        for kind in ("lbl", "img"):
+                            source = self._normalize_text(io_sources.get(kind)).lower()
+                            key = f"{kind}_{source}"
+                            if key in io_counts:
+                                io_counts[key] += 1
                 if not progress_emit:
                     return
                 if stage == "download_lbl":
@@ -436,7 +671,22 @@ class DownloadProcessingService:
 
             out_dir = self._output_dir_for_source(path, rec.get("source"))
             item_ok = False
-            if self._normalize_text(rec.get("lbl_url")):
+            is_chemcam = self._normalize_text(rec.get("camera")).strip().lower() == "chemcam"
+            if is_chemcam:
+                phase_started = time.perf_counter()
+                item_ok, reason = self._convert_chemcam_to_jpg(
+                    rec,
+                    out_dir,
+                    rover_csv_url=rover_csv_url,
+                    rover_csv_local_path=rover_csv_local,
+                    engine_version="app-0.1.0",
+                )
+                self._add_timing(timing_totals, "chemcam_conversion", time.perf_counter() - phase_started)
+                total_converted_ok += int(item_ok)
+                total_convert_errors += int(not item_ok)
+                if progress_emit and not item_ok:
+                    progress_emit(f"ChemCam conversion failed: {img_name} ({reason})")
+            elif self._normalize_text(rec.get("lbl_url")):
                 p_stats = self._process_records_with_engine(
                     [rec],
                     output_dir=str(out_dir),
@@ -450,7 +700,9 @@ class DownloadProcessingService:
                 total_convert_errors += int(p_stats.get("errors", 0))
                 item_ok = int(p_stats.get("ok", 0)) > 0
                 if item_ok:
+                    phase_started = time.perf_counter()
                     a_ok, a_skip = self._apply_optional_alpha_pair_processing([rec], output_dir=out_dir, progress_emit=progress_emit)
+                    self._add_timing(timing_totals, "alpha_pair", time.perf_counter() - phase_started)
                     alpha_pair_rgba_ok += int(a_ok)
                     alpha_pair_rgba_skipped += int(a_skip)
             else:
@@ -459,7 +711,9 @@ class DownloadProcessingService:
                 total_convert_errors += int(dl_stats.get("errors", 0))
                 item_ok = int(dl_stats.get("errors", 0)) == 0 and int(dl_stats.get("total", 0)) > 0
                 if item_ok:
+                    phase_started = time.perf_counter()
                     applied, reason = self._apply_mastcam_bayer_raw_processing(rec, out_dir)
+                    self._add_timing(timing_totals, "mastcam_bayer", time.perf_counter() - phase_started)
                     rec["_mastcam_bayer_applied"] = bool(applied)
                     rec["_mastcam_bayer_reason"] = self._normalize_text(reason)
                     if applied:
@@ -498,6 +752,8 @@ class DownloadProcessingService:
                         engine_version="app-0.1.0",
                         progress_emit=progress_emit,
                     )
+                    if img_url:
+                        raw_meta_written_urls.add(img_url)
                 except Exception:
                     pass
 
@@ -515,11 +771,15 @@ class DownloadProcessingService:
         extras_total = 0
         pds_done, raw_done = self._split_records_by_source(records[:processed_images])
         if pds_done:
+            phase_started = time.perf_counter()
             c, e = self._maybe_correct_mardi_products(pds_done, self._output_dir_for_source(path, "pds"))
+            self._add_timing(timing_totals, "mardi_correction", time.perf_counter() - phase_started)
             corrected_total += int(c)
             extras_total += int(e)
         if raw_done:
+            phase_started = time.perf_counter()
             c, e = self._maybe_correct_mardi_products(raw_done, self._output_dir_for_source(path, "raw"))
+            self._add_timing(timing_totals, "mardi_correction", time.perf_counter() - phase_started)
             corrected_total += int(c)
             extras_total += int(e)
         threshold = self._mastcam_min_output_size_bytes()
@@ -530,13 +790,15 @@ class DownloadProcessingService:
         removed_small_mastcam += int(self._enforce_mastcam_min_output_size(self._output_dir_for_source(path, "raw")))
         lines = [
             self._t("download_convert_summary_title"),
-            self._t("download_convert_selected", value=total),
+            self._t("download_convert_selected", value=selected_before_completed_filter),
+            self._t("download_summary_already_complete", value=completed_outputs_skipped),
             f"- Alpha-pair candidates (navcam/hazcam): {paired_candidates}",
             self._t("download_convert_processed", value=processed_images),
             self._t("download_convert_interrupted", value=self._t("yes_label") if interrupted else self._t("no_label")),
             self._t("download_convert_ok", value=total_converted_ok),
             self._t("download_convert_errors", value=total_convert_errors),
             self._t("download_convert_no_raw"),
+            f"- Parallel pre-download: downloaded={predownload_downloaded}, skipped={predownload_skipped}, errors={predownload_errors}",
         ]
         if min_size_threshold > 0 and (
             int(pre_size_stats.get("checked", 0)) > 0
@@ -561,19 +823,49 @@ class DownloadProcessingService:
         lines.append(f"Alpha RGBA skipped/errors: {alpha_pair_rgba_skipped}")
         lines.append(f"- Mastcam RAW Bayer processing: applied={mastcam_bayer_applied}, skipped={mastcam_bayer_skipped}")
         if raw_done:
+            phase_started = time.perf_counter()
             exif_applied, exif_skipped = self._apply_raw_archive_hardcoded_exif(
                 raw_done,
                 output_dir=self._output_dir_for_source(path, "raw"),
                 progress_emit=progress_emit,
             )
-            meta_written, meta_skipped = self._write_raw_archive_meta(
-                raw_done,
-                output_dir=self._output_dir_for_source(path, "raw"),
-                rover_csv_url=rover_csv_url,
-                rover_csv_local_path=str(rover_csv_local),
-                engine_version="app-0.1.0",
-                progress_emit=progress_emit,
-            )
+            self._add_timing(timing_totals, "raw_exif", time.perf_counter() - phase_started)
+            phase_started = time.perf_counter()
+            raw_still_needing_meta = [
+                r for r in raw_done
+                if self._normalize_text(r.get("img_url")) not in raw_meta_written_urls
+            ]
+            if raw_still_needing_meta:
+                meta_written, meta_skipped = self._write_raw_archive_meta(
+                    raw_still_needing_meta,
+                    output_dir=self._output_dir_for_source(path, "raw"),
+                    rover_csv_url=rover_csv_url,
+                    rover_csv_local_path=str(rover_csv_local),
+                    engine_version="app-0.1.0",
+                    progress_emit=progress_emit,
+                )
+            else:
+                meta_written, meta_skipped = 0, 0
+            meta_written += len(raw_done) - len(raw_still_needing_meta)
+            self._add_timing(timing_totals, "raw_metadata", time.perf_counter() - phase_started)
             lines.append(f"- RAW hardcoded EXIF: applied={exif_applied}, skipped={exif_skipped}")
             lines.append(f"- RAW meta.json: written={meta_written}, skipped={meta_skipped}")
+        self._add_timing(timing_totals, "workflow_total", time.perf_counter() - workflow_started)
+        lines.extend(self._timing_report_lines(timing_totals, products=timing_products or processed_images))
+        timing_path = self._save_timing_diagnostics(
+            path,
+            timing_totals,
+            products=timing_products or processed_images,
+            workflow="download_process",
+            diagnostics={
+                "parallel_predownload": {
+                    "enabled": parallel_download_enabled,
+                    "downloaded_files": predownload_downloaded,
+                    "skipped_files": predownload_skipped,
+                    "errors": predownload_errors,
+                },
+                "engine_io_counts": io_counts,
+            },
+        )
+        lines.append(f"- Timing diagnostics JSON: {timing_path}")
         return "\n".join(lines)

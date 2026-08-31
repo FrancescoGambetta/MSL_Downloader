@@ -1,3 +1,15 @@
+"""MSL Downloader -- Streamlit entrypoint.
+
+Run with `streamlit run app.py` from this directory (see `Run_App.bat` at
+the project root). This module wires together the UI panels
+(`ui_panels/*.py`), the business-logic facades (`actions.py`, `catalog.py`,
+`session.py`, `runtime.py`), and i18n (`i18n_helper.py`), and drives the
+single-page "builder" flow: login -> filters -> selection -> download/process
+-> organize. There is no free-text command/chat mode anymore -- `ui_mode` is
+hard-locked to `"builder"` (`session.py::init_state`); a legacy remnant of
+that removed mode is intentionally left in `ui.py` and is otherwise unused.
+"""
+
 from __future__ import annotations
 
 import json
@@ -80,10 +92,7 @@ from session import (
 )
 from catalog import (
     apply_filters,
-    camera_types_report,
-    catalog_content_report,
     load_camera_rules,
-    selection_report,
     set_translator,
 )
 
@@ -95,9 +104,16 @@ CORE_DIR = PROJECT_ROOT / "core"
 if str(CORE_DIR) not in sys.path:
     sys.path.insert(0, str(CORE_DIR))
 from portable_engine_adapter import download_records, process_records_with_engine, records_from_dataframe  # type: ignore
-from catalog_runner import CatalogUpdateOptions, run_catalog_update  # type: ignore
 
 def t(key: str, **kwargs: Any) -> str:
+    """Translate `key` into the active session language (app/i18n_app.json), falling back to `key` itself on any error.
+
+    This is the app's single translation function; it's handed down to every
+    other module below via each module's own `set_translator()` (e.g.
+    `set_actions_translator`, `set_help_translator`, `set_ui_translator`,
+    plus `catalog.set_translator` a few lines up) so they can all render
+    text in the user's language without importing Streamlit/i18n themselves.
+    """
     lang = st.session_state.get("lang", "it")
     try:
         return translate(I18N, lang, key, **kwargs)
@@ -106,36 +122,6 @@ def t(key: str, **kwargs: Any) -> str:
 
 
 set_translator(t)
-from parser import (
-    _append_parser_debug,
-    _bulk_cancel_words,
-    _bulk_cancelled_text,
-    _bulk_confirmation_text,
-    _bulk_proceed_words,
-    _cfg_keywords,
-    _contains_word,
-    _has_download_intent,
-    _has_process_intent,
-    _has_workflow_action_words,
-    _humanize_parser_response,
-    _intent_match,
-    _is_camera_list_request,
-    _is_unsupported_image_url_request,
-    _normalize_camera_key,
-    _normalize_command_for_parser,
-    _no_pending_bulk_text,
-    _parse_camera_quota_map,
-    _parse_cameras,
-    _parse_each_camera_count,
-    _parse_int,
-    _parse_requested_image_count,
-    _parse_size_bytes_from_text,
-    _parse_sol_range,
-    _parser_validation_note,
-    _wants_all_cameras,
-    _wants_organize_step,
-    _wants_random_sample,
-)
 from actions import (
     _apply_mardi_geometric_correction,
     _camera_folder_for_filename,
@@ -145,30 +131,20 @@ from actions import (
     _mardi_legacy_mode_enabled,
     _mardi_side_by_side_enabled,
     _maybe_correct_mardi_products,
-    _parse_cfg_value,
     _reset_filters_state,
-    _parse_set_config,
     _prepare_action_df,
-    _set_nested,
     choose_download_path_dialog,
-    download_geo_csv,
-    execute_action,
-    geo_status_text,
     get_selection_df,
     handle_local,
     organize_photos_in_output,
     organize_photos_by_sol_in_output,
     organize_photos_simple_layout,
-    run_catalog_update_from_text,
     run_download,
     run_download_and_process_interleaved,
     run_process,
     run_builder_download_process_organize,
-    run_sql_query,
     set_download_path,
     set_translator as set_actions_translator,
-    show_combined_config_text,
-    show_download_path_text,
     submit_command,
 )
 from help import (
@@ -178,11 +154,8 @@ from help import (
     set_translator as set_help_translator,
 )
 from ui import (
-    _format_msg_text_as_html,
     _hero_logo_html,
-    _is_preload_done,
     _meta_line_html,
-    _render_boot_page,
     _render_login_page,
     set_translator as set_ui_translator,
 )
@@ -190,39 +163,25 @@ from ui import (
 set_actions_translator(t)
 set_help_translator(t)
 set_ui_translator(t)
-_parser_helpers_unused = (
-    _append_parser_debug,
-    _bulk_cancel_words,
-    _bulk_cancelled_text,
-    _bulk_confirmation_text,
-    _bulk_proceed_words,
-    _cfg_keywords,
-    _contains_word,
-    _has_download_intent,
-    _has_process_intent,
-    _has_workflow_action_words,
-    _humanize_parser_response,
-    _intent_match,
-    _is_camera_list_request,
-    _is_unsupported_image_url_request,
-    _normalize_camera_key,
-    _normalize_command_for_parser,
-    _no_pending_bulk_text,
-    _parse_camera_quota_map,
-    _parse_cameras,
-    _parse_each_camera_count,
-    _parse_int,
-    _parse_requested_image_count,
-    _parse_size_bytes_from_text,
-    _parse_sol_range,
-    _parser_validation_note,
-    _wants_all_cameras,
-    _wants_organize_step,
-    _wants_random_sample,
-)
 
 
 def ui_main() -> None:
+    """Render one full script run of the app: init state, then login-or-builder page.
+
+    Streamlit re-runs this function top-to-bottom on every user interaction
+    (button click, widget change, `st.rerun()`), so it must stay cheap and
+    idempotent -- all one-time setup lives behind the `if k not in
+    st.session_state` guards inside `init_state()`.
+    """
+    # Kick off the background catalog/intent preload as early as possible so it
+    # has a head start over the synchronous load inside init_state()/
+    # _ensure_heavy_state() below. This was previously imported but never
+    # called anywhere, so the whole preload machinery in session.py /
+    # session_preload_service.py was dead code -- every session always paid
+    # the full synchronous catalog load cost. kickoff_login_preload() is a
+    # cheap no-op after the first real call (guarded by _PRELOAD_STATE
+    # ["started"]), so calling it unconditionally on every rerun is safe.
+    _kickoff_login_preload()
     init_state()
 
     st.session_state.mode = normalize_mode(st.session_state.get("mode", DEFAULT_MODE))
@@ -236,6 +195,7 @@ def ui_main() -> None:
         st.session_state.ui_mode = "builder"
 
     def _bytes_to_kb_text(raw: Any) -> str:
+        """Format a byte count as a whole-KB string for the "Min img size" builder field, or "" if unset/invalid."""
         if raw is None:
             return ""
         try:
@@ -247,6 +207,12 @@ def ui_main() -> None:
             return ""
 
     def _sync_builder_inputs_from_filters() -> None:
+        """Pre-fill the builder sidebar's raw widget state from the last *applied* filters.
+
+        Called once when switching into builder mode (see the ui_mode check
+        right below) so the sidebar shows what's actually active instead of
+        resetting to blank.
+        """
         f = dict(st.session_state.get("filters", {}))
         st.session_state.builder_sol_start_text = "" if f.get("sol_start") is None else str(f.get("sol_start"))
         st.session_state.builder_sol_end_text = "" if f.get("sol_end") is None else str(f.get("sol_end"))
@@ -264,6 +230,20 @@ def ui_main() -> None:
 
     active_theme = st.session_state.theme_dark if st.session_state.mode == "dark" else st.session_state.theme_light
     st.markdown(build_app_css(st.session_state.mode, active_theme), unsafe_allow_html=True)
+
+    pds_catalog_path = _resolve_catalog_parquet()
+    if not pds_catalog_path.exists():
+        st.markdown(f"## {t('catalog_setup_required_title')}")
+        st.warning(t("catalog_setup_required_message"))
+        st.markdown(
+            f"1. {t('catalog_setup_step_open')}  \n"
+            f"2. {t('catalog_setup_step_sync')}  \n"
+            f"3. {t('catalog_setup_step_restart')}"
+        )
+        st.info(t("catalog_setup_launcher", launcher="AVVIA_CATALOG_MANAGER_TEMP.bat"))
+        st.link_button(t("catalog_setup_open_manager"), "http://localhost:8502", width="stretch")
+        st.caption(f"{t('catalog_setup_expected_path')}: {pds_catalog_path}")
+        return
 
     st.session_state.current_view = "app" if bool(st.session_state.get("is_authenticated")) else "login"
 
@@ -337,6 +317,15 @@ def ui_main() -> None:
     progress_slot = st.empty()
     bulk_overlay_slot = st.empty()
 
+    # "Continua" in the bulk-confirm modal (ui_panels/bulk_modal.py) sets
+    # bulk_queue_stage="hide_only" rather than running the download inline,
+    # so the modal can visually disappear *before* the blocking
+    # download/process call below starts -- otherwise the overlay would
+    # freeze on screen for the whole operation. This drives it through
+    # hide_only -> ready_to_run -> run_now over three reruns; only on the
+    # third does queued_bulk_command actually get drained (further down).
+    # "Annulla"/"x" skip this entirely -- they clear pending_bulk_action
+    # directly since there's nothing to run.
     bulk_stage = normalize_text(st.session_state.get("bulk_queue_stage"))
     if bulk_stage == "hide_only":
         st.session_state.bulk_queue_stage = "ready_to_run"

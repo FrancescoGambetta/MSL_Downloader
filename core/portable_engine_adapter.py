@@ -1,3 +1,15 @@
+"""Bridges the app's catalog DataFrame world to `core.engine_pipeline`'s record/download world: DataFrame -> records, concurrent raw-file download, and the process-with-engine wrapper.
+
+`app/actions.py` imports `download_records`/`process_records_with_engine`
+directly from this module. `download_records` is a from-scratch concurrent
+downloader (thread pool + per-thread `requests.Session`, since sessions
+aren't thread-safe) independent of `engine_pipeline`'s own per-product
+download logic -- it's used for the raw-file-only download path and for
+pre-downloading before interleaved processing, whereas
+`process_records_with_engine` delegates the actual decode/convert/metadata
+work to `engine_pipeline.process_products_from_catalog`.
+"""
+
 from __future__ import annotations
 
 import importlib
@@ -12,12 +24,14 @@ import requests
 
 
 def _norm(value: Any) -> str:
+    """Coerce `value` to a trimmed string, or "" for None."""
     if value is None:
         return ""
     return str(value).strip()
 
 
 def records_from_dataframe(df, *, limit: Optional[int] = None, require_lbl: bool = False) -> list[dict[str, Any]]:
+    """Convert catalog DataFrame rows into plain download-record dicts (img_url/lbl_url/base_url + passthrough metadata fields), dropping rows with no img_url (and, if `require_lbl`, no lbl_url)."""
     if df is None or len(df) == 0:
         return []
 
@@ -42,6 +56,13 @@ def records_from_dataframe(df, *, limit: Optional[int] = None, require_lbl: bool
                 "product_id": row.get("product_id"),
                 "instrument_id": row.get("instrument_id"),
                 "instrument_name": row.get("instrument_name"),
+                "image_id": row.get("image_id"),
+                "start_time": row.get("start_time"),
+                "image_time": row.get("image_time"),
+                "site": row.get("site"),
+                "drive": row.get("drive"),
+                "pose": row.get("pose"),
+                "sclk": row.get("sclk"),
                 "_row_id": row.get("_row_id"),
                 "sol": row.get("sol"),
                 "camera": row.get("camera"),
@@ -61,6 +82,16 @@ def download_records(
     retries: int = 2,
     progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
 ) -> dict[str, Any]:
+    """Download every URL referenced by `records` (img/lbl/optional alpha-pair img+lbl) concurrently, deduplicated by target filename.
+
+    Multiple records can reference the same file (e.g. an alpha-pair mask
+    shared by several base images); each unique download target is fetched
+    exactly once (`target_to_url`/`target_to_records`) and every record
+    waiting on it is marked done together. `skip_existing=True` skips
+    targets already present with a non-zero size. Returns a stats dict
+    (`total`, `downloaded`, `skipped`, `errors`, `images_already_present`,
+    `images_with_new_downloads`, `output_dir`).
+    """
     out_dir = Path(output_dir).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -302,6 +333,13 @@ def process_records_with_engine(
     engine_version: str = "agent-0.1.0",
     progress_callback: Optional[Callable[[dict[str, Any]], None]] = None,
 ) -> dict[str, Any]:
+    """Run `engine_pipeline.process_products_from_catalog` over `records` (each must have both img_url and lbl_url; PDS-only, RAW has no label to process this way).
+
+    Counts both `"ok"` and `"ok_with_missing_gps"` engine statuses as
+    successes (a product with no rover-CSV localization match still got a
+    real JPG+meta.json written -- only `"error"` is a real failure).
+    Returns `{"total", "ok", "errors", "output_dir"}`.
+    """
     if not records:
         return {"total": 0, "ok": 0, "errors": 0, "output_dir": str(Path(output_dir).expanduser())}
 
@@ -331,8 +369,14 @@ def process_records_with_engine(
         progress_callback=progress_callback,
     )
 
-    ok = sum(1 for r in results if getattr(r, "status", "") == "ok")
-    err = len(results) - ok
+    # engine_pipeline.process_single_product returns status="ok_with_missing_gps"
+    # for a product that was fully processed (JPG + meta.json written) but just
+    # has no rover-CSV GPS match -- a real success, not a failure. Counting
+    # only "ok" here made `err = len(results) - ok` silently fold every one of
+    # those into the error count, which download_processing_service.py then
+    # shows directly to the user as "errors" in the post-run summary.
+    ok = sum(1 for r in results if getattr(r, "status", "") in ("ok", "ok_with_missing_gps"))
+    err = sum(1 for r in results if getattr(r, "status", "") == "error")
     return {
         "total": len(results),
         "ok": ok,

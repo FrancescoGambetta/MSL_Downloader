@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+"""Legacy pre-Sol-3000 PDS catalog builder, with its own reduced camera selection rules.
+
+This is a genuinely separate, still-used builder (own CLI, own
+`config/pre3000_catalog_config.json`) -- not dead code -- used by
+`catalog_manager/workers/integrity_check_worker.py` and `catalog_manager/customization.py` for
+the older mission phase where a narrower, hand-picked set of product
+types/levels was considered "the real image" per camera (see
+`PRE3000_SELECTION_RULES_FALLBACK`, the pre3000-specific counterpart to the
+main app's `camera_rules.json`). It also hosts `_record_is_allowed`, which
+`core/make_msl_catalog.py` reuses via a late/local import specifically to
+avoid a circular import between the two modules -- see that function's own
+docstring.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -93,6 +107,7 @@ PRE3000_SELECTION_RULES_FALLBACK: dict[str, Any] = {
 
 
 def _norm_ascii(text: str) -> str:
+    """Lowercase `text` and fold common Latin/German accented characters to their ASCII base letter."""
     return (
         text.lower()
         .replace("à", "a")
@@ -120,10 +135,12 @@ def _norm_ascii(text: str) -> str:
 
 
 def _normalize_text(value: Any) -> str:
+    """Trim and ASCII-fold `value`, or "" for None."""
     return _norm_ascii(str(value).strip()) if value is not None else ""
 
 
 def _sanitize_output_tag(value: str) -> str:
+    """Reduce `value` to a filename-safe tag (alphanumerics, `-`/`_`, spaces/dots -> `_`), for `_with_output_tag`."""
     txt = _normalize_text(value)
     out = []
     for ch in txt:
@@ -136,10 +153,12 @@ def _sanitize_output_tag(value: str) -> str:
 
 
 def _with_output_tag(path: Path, tag: str) -> Path:
+    """Insert `_<tag>` before `path`'s extension, e.g. for a customized output filename variant."""
     return path.with_name(f"{path.stem}_{tag}{path.suffix}")
 
 
 def _load_rules(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Return `cfg["selection_rules"]` if present, else `PRE3000_SELECTION_RULES_FALLBACK`."""
     raw = cfg.get("selection_rules")
     if isinstance(raw, dict) and raw:
         return raw
@@ -147,6 +166,7 @@ def _load_rules(cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def _camera_rule_items(rules_cfg: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """Return `(camera_name, rule_dict)` pairs from `rules_cfg`, supporting both the nested `"cameras": {...}` layout and top-level camera keys."""
     if not isinstance(rules_cfg, dict):
         return []
     reserved = {"raw_global_rules", "version", "schema_version", "cameras"}
@@ -165,6 +185,7 @@ def _camera_rule_items(rules_cfg: dict[str, Any]) -> list[tuple[str, dict[str, A
 
 
 def _legacy_pds_constraints(rule: dict[str, Any]) -> dict[str, Any]:
+    """Extract the pre-`"rules"` top-level PDS constraint keys straight off a camera rule entry (backward compatibility)."""
     keys = (
         "suffix_equals_any",
         "filename_prefix_any",
@@ -181,6 +202,7 @@ def _legacy_pds_constraints(rule: dict[str, Any]) -> dict[str, Any]:
 
 
 def _source_constraints(rule: dict[str, Any], source_name: str) -> tuple[str, dict[str, Any]] | None:
+    """Return `(filter_key, constraints)` for `source_name` ("pds", the only source this builder handles) from a camera rule -- from its `"rules"` block if present, else the legacy top-level keys. None if unset."""
     filter_key_default = _normalize_text(rule.get("filter_key"))
     rules_block = rule.get("rules")
     if isinstance(rules_block, dict):
@@ -203,6 +225,7 @@ def _source_constraints(rule: dict[str, Any], source_name: str) -> tuple[str, di
 
 
 def _record_matches_constraints(record: dict[str, Any], constraints: dict[str, Any]) -> bool:
+    """Check `record` against one source's compiled constraints (suffix/prefix/contains/min-size), the pre3000 counterpart of the main app's per-camera filter matching."""
     img_name = str(record.get("img_name", "")).upper()
     product_id = str(record.get("product_id", "")).upper()
 
@@ -246,6 +269,17 @@ def _record_matches_constraints(record: dict[str, Any], constraints: dict[str, A
 
 
 def _record_is_allowed(camera: str, record: dict[str, Any], rules_cfg: dict[str, Any]) -> tuple[bool, str]:
+    """Decide whether `record` (a scanned PDS product for `camera`) should be kept, per `rules_cfg`'s global drop-list and per-camera rule.
+
+    Returns `(allowed, reason)`; `reason` is a short machine-readable tag
+    explaining a rejection (`raw_drop:...`, `missing_rule:...`,
+    `missing_pds_rule:...`, `disabled:...`, `rule_miss:...`) or the reason
+    for acceptance. `core/make_msl_catalog.py` reuses this exact function
+    (via a late/local import to avoid a circular import between the two
+    modules) so both builders and the live app's integrity-check compare
+    against the identical allow/deny logic -- see
+    `devtools/audit_camera_rules_consistency.py`.
+    """
     raw_rules = rules_cfg.get("raw_global_rules", {}) if isinstance(rules_cfg, dict) else {}
     if isinstance(raw_rules, dict):
         drop_tokens = [str(x).upper() for x in (raw_rules.get("drop_filename_contains_any") or []) if _normalize_text(x)]
@@ -280,6 +314,7 @@ def _filter_products_for_pre3000(
     products: list[dict[str, Any]],
     rules_cfg: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Filter `products` through `_record_is_allowed`, returning `(kept_products, {rejection_reason: count})` for the run summary."""
     kept: list[dict[str, Any]] = []
     reasons: dict[str, int] = {}
     for rec in products:
@@ -298,6 +333,7 @@ def _build_fingerprint(
     sol_end: Optional[int],
     rules_cfg: dict[str, Any],
 ) -> str:
+    """Build a deterministic JSON fingerprint of the run's inputs (base URL, cameras, Sol range, rules), used to detect whether a re-run would be a no-op."""
     return json.dumps(
         {
             "base_url": base_url,
@@ -311,6 +347,7 @@ def _build_fingerprint(
 
 
 def _resolve_requested_cameras(args: argparse.Namespace, cfg: dict[str, Any], rules_cfg: dict[str, Any]) -> list[str]:
+    """Resolve the effective camera list from `--cameras` (falling back to config defaults), validated against which cameras `rules_cfg` actually has a rule for."""
     requested = args.cameras or cfg.get("default_cameras") or list(CAMERA_CONFIG_DEFAULT.keys())
     available_rule_cameras = {_norm_ascii(name) for name, _ in _camera_rule_items(rules_cfg)}
     cameras: list[str] = []
@@ -326,6 +363,7 @@ def _resolve_requested_cameras(args: argparse.Namespace, cfg: dict[str, Any], ru
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+    """Parse this builder's CLI arguments."""
     ap = argparse.ArgumentParser(description="Build/update a pre-3000 MSL catalog using camera-specific keep rules.")
     ap.add_argument("--config", default=str(DEFAULT_PRE3000_CONFIG_PATH), help="Config JSON path")
     ap.add_argument("--base-url", default=None)
@@ -354,6 +392,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    """Discover, filter (via `_record_is_allowed`), and write the pre-Sol-3000 catalog for the requested cameras/Sol range, sharing discovery/scan/enrichment machinery with `core/make_msl_catalog.py`."""
     args = parse_args(argv)
     _install_controls()
 
@@ -510,7 +549,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     for camera in cameras:
         if STOP_EVENT.is_set():
-            _emit("stop", "Interruzione richiesta: stop build catalog")
+            _emit("stop", "Stop requested: interrupting catalog build")
             break
 
         cconf = cam_cfg[camera]
@@ -546,7 +585,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         total_sols = len(unique_sols)
         for i, loc in enumerate(unique_sols, start=1):
             if STOP_EVENT.is_set():
-                _emit("stop", f"{camera}: stop richiesto durante scan prodotti")
+                _emit("stop", f"{camera}: stop requested during product scan")
                 break
 
             if loc.sol_url in scanned_sol_urls:
@@ -590,7 +629,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 _emit("catalog_live", f"items={new_items_total} -> {output_path}")
 
         if STOP_EVENT.is_set():
-            _emit("stop", "Interruzione richiesta: stop arricchimento geografico")
+            _emit("stop", "Stop requested: interrupting geographic enrichment")
             continue
 
         _emit("camera_geo_enrich", f"{camera}: enriching products with geography")
@@ -600,7 +639,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     checkpoint(reason="final", write_parquet=True)
 
     if STOP_EVENT.is_set():
-        _emit("stop", "Interruzione richiesta: stop build catalog")
+        _emit("stop", "Stop requested: interrupting catalog build")
 
     final_rows = _write_parquet(catalog, parquet_output_path)
 

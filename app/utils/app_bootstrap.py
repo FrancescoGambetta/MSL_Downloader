@@ -1,3 +1,14 @@
+"""Standalone diagnostic dashboard for the catalog + catalog-update pipeline -- NOT the main app.
+
+This is its own Streamlit entrypoint (`streamlit run app/utils/app_bootstrap.py`),
+separate from `app/app.py`. As of this cleanup pass, nothing in the repo
+launches or imports it (no `.bat` script references it) -- it appears to
+predate the current app and Catalog Manager, and may be safe to delete.
+Left in place pending an explicit decision (flagged separately) rather than
+removed unilaterally, since deleting a whole standalone tool is a bigger
+call than trimming an unreachable function.
+"""
+
 from __future__ import annotations
 
 import json
@@ -45,6 +56,7 @@ def load_json(path: Path) -> dict:
 
 
 def resolve_runtime_paths() -> dict:
+    """Resolve the catalog/config paths this dashboard needs, from config/runtime_paths.json (its own copy, independent of runtime.py's)."""
     cfg = load_json(PROJECT_ROOT / "config" / "runtime_paths.json")
     return {
         "catalog_json": (PROJECT_ROOT / cfg.get("catalog_json", "data/catalog/catalog.json")).resolve(),
@@ -55,6 +67,7 @@ def resolve_runtime_paths() -> dict:
 
 
 def load_catalog_df(parquet_path: Path) -> pd.DataFrame:
+    """Load the catalog parquet for the preview table, or an empty DataFrame if it doesn't exist/fails to parse."""
     if not parquet_path.exists():
         return pd.DataFrame()
     try:
@@ -64,6 +77,7 @@ def load_catalog_df(parquet_path: Path) -> pd.DataFrame:
 
 
 def main() -> None:
+    """Render the diagnostic dashboard: catalog row/column counts, resolved paths, a manual catalog-update trigger, and a data preview table."""
     st.title(t("bootstrap_title"))
 
     runtime = resolve_runtime_paths()
@@ -85,7 +99,7 @@ def main() -> None:
 
     cameras = st.multiselect(
         t("bootstrap_cameras"),
-        options=["mastcam", "mahli", "navcam", "mardi", "hazcam"],
+        options=["mastcam", "mahli", "navcam", "mardi", "hazcam", "chemcam"],
         default=["mastcam"],
     )
 

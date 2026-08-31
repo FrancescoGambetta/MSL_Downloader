@@ -1,3 +1,13 @@
+"""The bulk-download confirmation modal: shown when a builder run would act on more than DEFAULT_BULK_CONFIRM_THRESHOLD images.
+
+See `app.py::ui_main`'s comment on the `bulk_queue_stage` state machine for
+why "Continua" and "Annulla"/"x" take different paths: Continua needs the
+overlay to visually disappear before the (blocking) download/process call
+starts, so it drives a multi-rerun hide_only -> ready_to_run -> run_now
+sequence; Cancel doesn't run anything, so it clears `pending_bulk_action`
+immediately instead of queuing through that sequence.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Callable
@@ -11,6 +21,7 @@ def render_bulk_confirmation_ui(
     normalize_text: Callable[[Any], str],
     bulk_overlay_slot: Any,
 ) -> None:
+    """Render the bulk-confirm overlay if there's a pending bulk action to confirm, else clear the slot."""
     queue_stage = normalize_text(st.session_state.get("bulk_queue_stage"))
     if queue_stage in {"hide_only", "ready_to_run", "run_now"}:
         bulk_overlay_slot.empty()
@@ -36,8 +47,15 @@ def render_bulk_confirmation_ui(
                 st.markdown(f"#### {t('bulk_modal_title')}")
             with header_r:
                 if st.button("×", key="bulk_overlay_close_btn", help=t("bulk_modal_cancel"), width="stretch"):
+                    # Cancel doesn't run anything, unlike "Continua" -- it must
+                    # not wait for the queued_bulk_command/run_now choreography
+                    # (app.py only drains that queue once bulk_queue_stage
+                    # reaches "run_now", which cancel never sets), or
+                    # pending_bulk_action is left set and the modal can pop
+                    # back up on the next unrelated rerun.
+                    st.session_state.pending_bulk_action = None
                     st.session_state.suppress_bulk_modal_once = True
-                    st.session_state.queued_bulk_command = "cancel"
+                    st.session_state.queued_bulk_command = ""
                     st.session_state.bulk_queue_stage = ""
                     st.session_state.operation_live_text = ""
                     bulk_overlay_slot.empty()
@@ -53,8 +71,12 @@ def render_bulk_confirmation_ui(
             c_cancel, c_continue = st.columns(2, gap="small")
             with c_cancel:
                 if st.button(t("bulk_modal_cancel"), key="bulk_overlay_cancel_btn", width="stretch"):
+                    # See the × handler above: clear pending_bulk_action here
+                    # directly rather than queuing "cancel" for the run_now
+                    # drain, which cancel never reaches.
+                    st.session_state.pending_bulk_action = None
                     st.session_state.suppress_bulk_modal_once = True
-                    st.session_state.queued_bulk_command = "cancel"
+                    st.session_state.queued_bulk_command = ""
                     st.session_state.bulk_queue_stage = ""
                     st.session_state.operation_live_text = ""
                     bulk_overlay_slot.empty()

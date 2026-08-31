@@ -1,3 +1,5 @@
+"""Color palette definitions for every dark/light theme the UI offers, plus lookup helpers used by `css.py`/`app.py`."""
+
 DARK_THEMES = {
     "mars": {
         "bg": "#1a1814",
@@ -87,15 +89,18 @@ DEFAULT_THEME_BY_MODE = {
 
 
 def normalize_mode(mode_name):
+    """Return `mode_name` if it's a known mode ("dark"/"light"), else `DEFAULT_MODE`."""
     return mode_name if mode_name in MODE_THEMES else DEFAULT_MODE
 
 
 def theme_names(mode_name):
+    """List the theme names available for `mode_name` (e.g. ["mars", "arctic", "sand", "nebula"] for "dark")."""
     mode = normalize_mode(mode_name)
     return list(MODE_THEMES[mode].keys())
 
 
 def get_theme(mode_name, theme_name):
+    """Return the color-palette dict for `theme_name` in `mode_name`, falling back to that mode's default theme if `theme_name` is unknown."""
     mode = normalize_mode(mode_name)
     themes = MODE_THEMES[mode]
     default_theme = DEFAULT_THEME_BY_MODE[mode]

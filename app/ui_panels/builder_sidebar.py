@@ -1,3 +1,15 @@
+"""The main sidebar: Sol/camera/size/source filters, the RUN button, applied-filters summary, and the saved-files/viewport picker.
+
+This is the single largest UI surface in the app -- the whole builder
+workflow (filter -> apply -> run) lives in one `st.form` here so that
+changing a Sol/camera/size field doesn't trigger a rerun on every
+keystroke, only on "Apply filters"/"Clear filters". The RUN button itself
+sits outside the form (it needs to react to state set just above it, like
+`updated_filters`) and, on click, drives the whole download+process+organize
+workflow inline, rendering its own live progress bar/log into
+`progress_slot`.
+"""
+
 from __future__ import annotations
 
 import json
@@ -30,6 +42,7 @@ def render_builder_sidebar(
     run_builder_download_process_organize: Callable[..., Any],
     progress_slot: Any,
 ) -> None:
+    """Render the sidebar: logout, the filter form, RUN/Stop, applied-filters summary, and the saved-images picker. Runs the workflow inline when RUN is clicked."""
     with st.sidebar:
         st.markdown(f'<div class="ai-heart"><div class="ai-heart-title">{t("ai_agent_title")}</div></div>', unsafe_allow_html=True)
         current_user_name = normalize_text(st.session_state.get("current_user_name"))
@@ -61,6 +74,7 @@ def render_builder_sidebar(
             save_app_ui_config(ui_cfg)
 
         def _int_or_none(raw: str) -> Optional[int]:
+            """Parse `raw` as an int, or None if it's blank/unparseable."""
             txt = normalize_text(raw)
             if not txt:
                 return None
@@ -70,6 +84,7 @@ def render_builder_sidebar(
                 return None
 
         def _collect_builder_filters() -> tuple[dict[str, Any], Optional[int]]:
+            """Build the `filters` dict from the sidebar's raw widget state, enabling each camera's camera_rules.json filter_key only for cameras the user actually selected."""
             updated = dict(st.session_state.get("filters", {}))
             updated["sol_start"] = _int_or_none(st.session_state.get("builder_sol_start_text"))
             updated["sol_end"] = _int_or_none(st.session_state.get("builder_sol_end_text"))
@@ -120,15 +135,7 @@ def render_builder_sidebar(
         if isinstance(df_all, pd.DataFrame) and "camera" in df_all.columns:
             cam_options = sorted({str(v) for v in df_all["camera"].dropna().astype(str) if str(v).strip()})
         if not cam_options:
-            cam_options = ["hazcam", "mahli", "mardi", "mastcam", "navcam"]
-
-        # Hide cameras that are not ready for the UI yet (they may still exist in catalogs).
-        hidden_cameras = {"chemcam"}
-        cam_options = [
-            cam
-            for cam in cam_options
-            if normalize_text(cam).strip().lower() not in hidden_cameras
-        ]
+            cam_options = ["chemcam", "hazcam", "mahli", "mardi", "mastcam", "navcam"]
 
         selected_now = [str(v) for v in (st.session_state.get("builder_cameras_selected") or []) if str(v).strip()]
         selected_valid = [v for v in selected_now if v in cam_options]

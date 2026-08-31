@@ -1,3 +1,5 @@
+"""Filter defaults, filter-reset, and the "which rows will an action act on" selection logic."""
+
 from __future__ import annotations
 
 import hashlib
@@ -7,7 +9,10 @@ import pandas as pd
 
 
 class SelectionService:
+    """Owns the default filter state and resolves the effective selection DataFrame for download/process actions."""
+
     def default_filters_state(self) -> dict[str, Any]:
+        """Return the blank/default `filters` dict (no Sol range, both sources on, no camera-specific restrictions)."""
         return {
             "sol_start": None,
             "sol_end": None,
@@ -29,6 +34,7 @@ class SelectionService:
         }
 
     def filters_are_default(self, state: dict[str, Any]) -> bool:
+        """True if `state["filters"]` is exactly the untouched default (i.e. the user hasn't applied any filter yet)."""
         cur = state.get("filters", {})
         try:
             return dict(cur) == self.default_filters_state()
@@ -42,6 +48,14 @@ class SelectionService:
         apply_filters: Callable[[], int],
         preserve_selection: bool = False,
     ) -> int:
+        """Reset `state["filters"]` to default and re-derive `df_filtered*`.
+
+        With `preserve_selection=True`, skips re-running `apply_filters`
+        (which would reload from the raw catalog) and just resets the
+        *filtered* view back to the full unfiltered catalog already in
+        memory -- used by "Clear filters" so it doesn't also wipe whatever
+        the user had selected.
+        """
         state["filters"] = self.default_filters_state()
         if preserve_selection:
             if isinstance(state.get("df_pds"), pd.DataFrame):
@@ -55,6 +69,13 @@ class SelectionService:
         return apply_filters()
 
     def get_selection_df(self, state: dict[str, Any], *, all_variants: bool = False) -> pd.DataFrame:
+        """Return the DataFrame an action should operate on: the persisted selection when filters are untouched, otherwise the current filtered view.
+
+        With `all_variants=True`, expands each selected row to every catalog
+        row sharing its `_family_key` (e.g. all processing-level variants of
+        the same shot) -- results are cached per Sol-range/camera-set digest
+        to avoid recomputing the expensive `isin` scan on every rerun.
+        """
         if not self.filters_are_default(state):
             sel = state["df_filtered"].copy()
         else:

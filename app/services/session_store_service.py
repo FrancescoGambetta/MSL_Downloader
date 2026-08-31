@@ -1,3 +1,5 @@
+"""Per-user session history, stored as one JSON file per user under data/sessions/<NORMALIZED_NAME>.json."""
+
 from __future__ import annotations
 
 import json
@@ -8,6 +10,8 @@ from typing import Any, Callable, Optional
 
 
 class SessionStoreService:
+    """Reads/writes each user's session-history JSON file: login/resume/logout bookkeeping and the append-only action log."""
+
     def __init__(
         self,
         *,
@@ -22,21 +26,25 @@ class SessionStoreService:
         self._now_utc = now_utc
 
     def sessions_root(self) -> str:
+        """Return the data/sessions directory path as a string."""
         return str(self._project_root / "data" / "sessions")
 
     def normalize_user_name(self, name: str) -> str:
+        """Collapse whitespace and uppercase `name`, giving the canonical form used as a user's identity key."""
         raw = self._normalize_text(name)
         if not raw:
             return ""
-        cleaned = re.sub(r"\\s+", " ", raw).strip()
+        cleaned = re.sub(r"\s+", " ", raw).strip()
         return cleaned.upper()
 
     def user_session_path(self, user_norm: str) -> Path:
+        """Return the JSON file path for `user_norm`'s session history (non-filename-safe characters replaced with `_`)."""
         safe = re.sub(r"[^A-Z0-9_ -]", "_", user_norm).strip().replace(" ", "_")
         safe = safe or "USER"
         return Path(self._project_root / "data" / "sessions" / f"{safe}.json")
 
     def load_user_session_data(self, user_norm: str) -> dict[str, Any]:
+        """Load `user_norm`'s session-history JSON, or {} if it doesn't exist yet / is invalid."""
         p = self.user_session_path(user_norm)
         if not p.exists():
             return {}
@@ -47,17 +55,21 @@ class SessionStoreService:
             return {}
 
     def save_user_session_data(self, user_norm: str, data: dict[str, Any]) -> None:
+        """Persist `data` as `user_norm`'s session-history JSON."""
         p = self.user_session_path(user_norm)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     def now_local_iso(self) -> str:
+        """Current local time as an ISO-8601 string (second precision)."""
         return self._now_local().isoformat(timespec="seconds")
 
     def now_utc_iso(self) -> str:
+        """Current UTC time as an ISO-8601 string (second precision)."""
         return self._now_utc().isoformat(timespec="seconds")
 
     def start_user_session(self, display_name: str) -> tuple[str, str]:
+        """Append a brand-new session entry to `display_name`'s history and return `(user_norm, session_id)`."""
         user_norm = self.normalize_user_name(display_name)
         now = self.now_local_iso()
         now_utc = self.now_utc_iso()
@@ -82,6 +94,7 @@ class SessionStoreService:
         return user_norm, session_id
 
     def get_latest_session_info(self, user_norm: str) -> Optional[dict[str, Any]]:
+        """Return a summary of `user_norm`'s most recent session (id/started_at/ended_at/display name), or None if they have no history."""
         data = self.load_user_session_data(user_norm)
         sessions = data.get("sessions", []) if isinstance(data.get("sessions"), list) else []
         if not sessions:
@@ -97,6 +110,7 @@ class SessionStoreService:
         }
 
     def resume_user_session(self, user_norm: str, display_name: str) -> tuple[str, str]:
+        """Reopen `user_norm`'s most recent session entry (clearing its `ended_at`), or start a new one if they have no history."""
         data = self.load_user_session_data(user_norm)
         sessions = data.get("sessions", []) if isinstance(data.get("sessions"), list) else []
         if not sessions:
@@ -128,6 +142,7 @@ class SessionStoreService:
         event_type: str,
         payload: Optional[dict[str, Any]] = None,
     ) -> None:
+        """Append one `{type, payload, timestamp}` entry to the current session's action log, a no-op if no user is logged in."""
         user_norm = self._normalize_text(state.get("current_user_norm"))
         session_id = self._normalize_text(state.get("current_session_id"))
         if not user_norm or not session_id:
@@ -157,6 +172,7 @@ class SessionStoreService:
         self.save_user_session_data(user_norm, data)
 
     def end_user_session(self, *, state: dict[str, Any]) -> None:
+        """Mark the current session as ended (sets `ended_at`) in the user's history file."""
         user_norm = self._normalize_text(state.get("current_user_norm"))
         session_id = self._normalize_text(state.get("current_session_id"))
         if not user_norm or not session_id:

@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "pds": {
+    "provider": "google_drive_public",
+    "folder_url": "https://drive.google.com/drive/folders/1-N-MrxifazTm0Yl0wWaeC6Xo5UBBJkgx?usp=drive_link",
+    "manifest": {
+      "filename": "Catalog_PDS.manifest.json",
+      "file_id": "1H5VjRqCjLdq2u24FYW-rAMAZHauvZLYf",
+      "download_url": "https://drive.usercontent.google.com/download?id=1H5VjRqCjLdq2u24FYW-rAMAZHauvZLYf&export=download&confirm=t"
+    },
+    "parquet": {
+      "filename": "Catalog_PDS.parquet",
+      "file_id": "1TyDDSYRWlryx14GctI3cK42ShZqjgoxR",
+      "download_url": "https://drive.usercontent.google.com/download?id=1TyDDSYRWlryx14GctI3cK42ShZqjgoxR&export=download&confirm=t"
+    }
+  },
+  "raw": {
+    "provider": "google_drive_public",
+    "folder_url": "https://drive.google.com/drive/folders/1D-WwlRaBk-a4wi27YHGfdKrQlIQEBALC?usp=sharing",
+    "manifest": {
+      "filename": "Catalog_RawArch.manifest.json",
+      "file_id": "1QW0JlDo7tzRTgfait1jrEVFSF_qgy3Ry",
+      "download_url": "https://drive.usercontent.google.com/download?id=1QW0JlDo7tzRTgfait1jrEVFSF_qgy3Ry&export=download&confirm=t"
+    },
+    "parquet": {
+      "filename": "Catalog_RawArch.parquet",
+      "file_id": "1ON2YieB1GHd1ZARwreDj6rjfwxid5pr6",
+      "download_url": "https://drive.usercontent.google.com/download?id=1ON2YieB1GHd1ZARwreDj6rjfwxid5pr6&export=download&confirm=t"
+    }
+  }
+}

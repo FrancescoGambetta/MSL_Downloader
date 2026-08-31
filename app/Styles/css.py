@@ -1,7 +1,18 @@
+"""Generates the app's global CSS as one big `<style>` block, themed from the active mode/theme's color palette."""
+
 from Styles.themes import get_theme
 
 
 def build_app_css(mode_name, theme_name):
+    """Return a `<style>...</style>` HTML string styling the whole app (layout, buttons, inputs, dialogs, live log, etc.) from `get_theme(mode_name, theme_name)`'s colors.
+
+    Injected once per rerun via `st.markdown(..., unsafe_allow_html=True)`
+    in `app.py`. The bulk of this function is just CSS text with the
+    theme's colors interpolated in via `color-mix()` for tints/shades --
+    there's no other logic to document beyond the color-variable setup
+    below and what each subsequent CSS rule visually targets (named by its
+    selector/class).
+    """
     th = get_theme(mode_name, theme_name)
     tone_blend = th["bg"]
     button_bg = f'color-mix(in srgb, {th["surface"]} 72%, {tone_blend} 28%)'
@@ -52,8 +63,8 @@ div[data-testid="stCaptionContainer"] p {{
 
 /* Streamlit progress bar: theme-adaptive colors */
 div[data-testid="stProgress"] > div {{
-    background: color-mix(in srgb, {th["surface"]} 80%, {tone_blend} 20%) !important;
-    border-radius: 999px !important;
+    background: transparent !important;
+    border-radius: 0 !important;
 }}
 /* Streamlit has changed markup across versions; style both BaseWeb and ARIA variants. */
 div[data-testid="stProgress"] [data-baseweb="progress-bar"] > div {{

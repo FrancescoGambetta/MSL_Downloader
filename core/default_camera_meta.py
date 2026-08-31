@@ -23,6 +23,10 @@ CAMERA_DEFAULTS: dict[str, dict[str, Any]] = {
     "hazcam": {"focal_length_mm": 16.0, "pixel_size_um": 12.0},
     "mahli": {"focal_length_mm": 18.0, "pixel_size_um": 12.0},
     "mardi": {"focal_length_mm": 18.0, "pixel_size_um": 12.0},
+    # ChemCam RMI has a fixed 14 um detector pixel pitch, while its moving
+    # secondary mirror makes focal length acquisition-dependent. Do not assign
+    # a hard-coded focal length to RAW products.
+    "chemcam": {"pixel_size_um": 14.0},
 }
 
 
@@ -32,11 +36,12 @@ def camera_key_from_ids(
     instrument_id: Optional[str] = None,
     product_id: Optional[str] = None,
 ) -> Optional[str]:
+    """Resolve a `CAMERA_DEFAULTS` key from whatever identifying fields are available, splitting Mastcam into left/right by instrument_id/product_id (default: left)."""
     cam = (camera or "").strip().lower()
     inst = (instrument_id or "").strip().upper()
     pid = (product_id or "").strip().upper()
 
-    if cam in {"navcam", "hazcam", "mahli", "mardi"}:
+    if cam in {"navcam", "hazcam", "mahli", "mardi", "chemcam"}:
         return cam
 
     if cam == "mastcam":
@@ -71,6 +76,8 @@ def camera_key_from_ids(
         return "mahli"
     if inst.startswith(("MARDI", "MAR", "MD")):
         return "mardi"
+    if inst.startswith(("CHEMCAM", "CCAM", "RMI")):
+        return "chemcam"
 
     return None
 
@@ -81,6 +88,7 @@ def defaults_for_record(
     instrument_id: Optional[str] = None,
     product_id: Optional[str] = None,
 ) -> dict[str, Any]:
+    """Return the calibration defaults dict (focal_length_mm/pixel_size_um) for whichever camera these IDs resolve to, or {} if unrecognized."""
     key = camera_key_from_ids(camera=camera, instrument_id=instrument_id, product_id=product_id)
     if not key:
         return {}

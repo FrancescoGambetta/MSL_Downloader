@@ -1,3 +1,5 @@
+"""Raw catalog parquet I/O: reading the file and computing the derived columns filtering relies on."""
+
 from __future__ import annotations
 
 from typing import Optional
@@ -6,6 +8,8 @@ import pandas as pd
 
 
 class CatalogIOService:
+    """Loads the catalog parquet and derives the `_row_id`/`_file_name`/`_suffix_code`/`_family_key` columns used throughout filtering."""
+
     def load_catalog(self, path: str, *, columns: Optional[list[str]] = None) -> pd.DataFrame:
         """
         Load catalog parquet.
@@ -15,6 +19,7 @@ class CatalogIOService:
         return pd.read_parquet(path, columns=cols)
 
     def prepare_catalog_index(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add `_row_id` (stable positional index), `_file_name`, `_suffix_code` (e.g. DRCL/DXXX), and `_family_key` (filename with the trailing suffix segment stripped) to a freshly-loaded catalog DataFrame."""
         out = df.copy()
         if "_row_id" not in out.columns:
             out["_row_id"] = out.index.astype(int)
@@ -24,13 +29,13 @@ class CatalogIOService:
             file_name = pd.Series([""] * len(out), index=out.index)
         out["_file_name"] = file_name
         # Extract the suffix code from the filename. This is used by filters (e.g. DRCL, DXXX).
-        # Support both PDS (.IMG) and RAW archive (.JPG/.JPEG) and keep the regex case-insensitive.
+        # Support PDS IMG/TIFF and RAW archive JPG/PNG; keep the regex case-insensitive.
         out["_suffix_code"] = (
-            file_name.str.extract(r"(?i)_([A-Za-z0-9]+)\.(?:IMG|JPG|JPEG|PNG|LBL)$", expand=False)
+            file_name.str.extract(r"(?i)_([A-Za-z0-9]+)\.(?:IMG|TIF|TIFF|JPG|JPEG|PNG|LBL)$", expand=False)
             .fillna("")
             .str.upper()
         )
-        stem = file_name.str.replace(r"(?i)\.(?:IMG|JPG|JPEG|PNG|LBL)$", "", regex=True)
+        stem = file_name.str.replace(r"(?i)\.(?:IMG|TIF|TIFF|JPG|JPEG|PNG|LBL)$", "", regex=True)
         # Normalize "variants" by stripping the trailing suffix segment (anything after the last underscore).
         # This matches the catalog builder logic in `core/make_msl_catalog.py:_family_key`.
         out["_family_key"] = stem.where(~stem.str.contains("_", regex=False), stem.str.rsplit("_", n=1).str[0])

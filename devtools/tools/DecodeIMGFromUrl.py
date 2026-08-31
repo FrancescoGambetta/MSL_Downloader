@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import struct
@@ -142,6 +143,7 @@ def parse_lbl(lbl_path: str) -> dict[str, Any]:
     Minimal PDS3 label parser for IMAGE object fields.
     """
     params: dict[str, str] = {}
+    label_text = Path(lbl_path).read_text(encoding="utf-8", errors="replace")
     in_image_object = False
     with open(lbl_path, "r", errors="replace") as f:
         for line in f:
@@ -168,7 +170,8 @@ def parse_lbl(lbl_path: str) -> dict[str, Any]:
     sample_type = str(params.get("SAMPLE_TYPE", "MSB_UNSIGNED_INTEGER")).upper()
 
     byte_order = "MSB" if "MSB" in sample_type else ("LSB" if "LSB" in sample_type else "MSB")
-    signed = "SIGNED" in sample_type
+    is_real = "REAL" in sample_type or "FLOAT" in sample_type
+    signed = "UNSIGNED" not in sample_type and ("SIGNED" in sample_type or is_real)
 
     bit_mask: int | None = None
     raw_mask = str(params.get("SAMPLE_BIT_MASK", "")).strip()
@@ -180,6 +183,22 @@ def parse_lbl(lbl_path: str) -> dict[str, Any]:
         if m3:
             bit_mask = int(m3.group(1), 16)
 
+    # Detached MSL IMG files may contain an image header before the raster.
+    # ^IMAGE is a one-based fixed-length record pointer, so honour it instead
+    # of interpreting the header bytes as the first image rows.
+    record_bytes = 0
+    image_record = 1
+    record_match = re.search(r"(?mi)^\s*RECORD_BYTES\s*=\s*(\d+)", label_text)
+    if record_match:
+        record_bytes = int(record_match.group(1))
+    pointer_match = re.search(
+        r"(?mis)^\s*\^IMAGE\s*=\s*(?:\([^,]+,\s*)?(\d+)\s*\)?",
+        label_text,
+    )
+    if pointer_match:
+        image_record = max(1, int(pointer_match.group(1)))
+    image_offset_bytes = (image_record - 1) * record_bytes if record_bytes else 0
+
     return {
         "lines": _int("LINES", 144),
         "samples": _int("LINE_SAMPLES", 160),
@@ -188,12 +207,14 @@ def parse_lbl(lbl_path: str) -> dict[str, Any]:
         "storage": storage,
         "byte_order": byte_order,
         "signed": signed,
+        "is_real": is_real,
         "bit_mask": bit_mask,
+        "image_offset_bytes": image_offset_bytes,
         "raw_params": params,
     }
 
 
-def _dtype_unpacker(bits: int, byte_order: str, signed: bool) -> tuple[str, int]:
+def _dtype_unpacker(bits: int, byte_order: str, signed: bool, is_real: bool = False) -> tuple[str, int]:
     if bits == 8:
         fmt = "b" if signed else "B"
         return fmt, 1
@@ -201,36 +222,76 @@ def _dtype_unpacker(bits: int, byte_order: str, signed: bool) -> tuple[str, int]
         endian = ">" if byte_order == "MSB" else "<"
         fmt = endian + ("h" if signed else "H")
         return fmt, 2
-    raise ValueError(f"Unsupported SAMPLE_BITS={bits} (supported: 8,16)")
+    if bits == 32:
+        endian = ">" if byte_order == "MSB" else "<"
+        if is_real:
+            return endian + "f", 4
+        return endian + ("i" if signed else "I"), 4
+    raise ValueError(f"Unsupported SAMPLE_BITS={bits} (supported: 8,16,32)")
 
 
-def _read_band_sequential(img_path: str, meta: dict[str, Any]) -> list[list[int]]:
+def _read_band_sequential(img_path: str, meta: dict[str, Any]) -> list[list[float | int]]:
     lines = int(meta["lines"])
     samples = int(meta["samples"])
     bands = int(meta["bands"])
     bits = int(meta["bits"])
     byte_order = str(meta["byte_order"])
     signed = bool(meta["signed"])
+    is_real = bool(meta.get("is_real"))
     bit_mask = meta.get("bit_mask")
 
-    fmt, bpp = _dtype_unpacker(bits, byte_order, signed)
+    fmt, bpp = _dtype_unpacker(bits, byte_order, signed, is_real)
     count = lines * samples
     band_bytes = count * bpp
 
-    out: list[list[int]] = []
+    out: list[list[float | int]] = []
     with open(img_path, "rb") as f:
+        f.seek(max(0, int(meta.get("image_offset_bytes") or 0)))
         for _b in range(bands):
             raw = f.read(band_bytes)
             if len(raw) < band_bytes:
                 raise ValueError("Unexpected EOF while reading IMG")
             vals = list(struct.unpack(fmt * count if bpp == 1 else fmt[0] + fmt[1:] * count, raw))  # type: ignore[index]
-            if bit_mask is not None:
+            if bit_mask is not None and not is_real:
                 vals = [int(v) & int(bit_mask) for v in vals]
-            out.append([int(v) for v in vals])
+            out.append([float(v) if is_real else int(v) for v in vals])
     return out
 
 
-def _to_png(out_path: Path, lines: int, samples: int, bands: int, band_data: list[list[int]]) -> None:
+def _normalize_channel(values: list[float | int]) -> list[int]:
+    """Map scientific samples to display bytes, ignoring NaN/Inf and outliers."""
+    finite = [float(value) for value in values if math.isfinite(float(value))]
+    if not finite:
+        return [0] * len(values)
+
+    ordered = sorted(finite)
+    # A percentile stretch keeps PDS invalid/sentinel values from flattening
+    # the useful scientific signal in preview images.
+    if len(ordered) >= 100:
+        low = ordered[int((len(ordered) - 1) * 0.01)]
+        high = ordered[int((len(ordered) - 1) * 0.99)]
+    else:
+        low, high = ordered[0], ordered[-1]
+    if high <= low:
+        high = low + 1.0
+    scale = 255.0 / (high - low)
+    pixels: list[int] = []
+    for value in values:
+        number = float(value)
+        if not math.isfinite(number):
+            pixels.append(0)
+        else:
+            pixels.append(max(0, min(255, int((number - low) * scale))))
+    return pixels
+
+
+def _to_png(
+    out_path: Path,
+    lines: int,
+    samples: int,
+    bands: int,
+    band_data: list[list[float | int]],
+) -> None:
     try:
         from PIL import Image
     except Exception as exc:  # pragma: no cover
@@ -238,25 +299,28 @@ def _to_png(out_path: Path, lines: int, samples: int, bands: int, band_data: lis
 
     if bands <= 1:
         flat = band_data[0]
-        # Normalize to 0..255
-        mn = min(flat) if flat else 0
-        mx = max(flat) if flat else 1
-        scale = 255.0 / float(mx - mn) if mx != mn else 1.0
-        pixels = [max(0, min(255, int((v - mn) * scale))) for v in flat]
+        pixels = _normalize_channel(flat)
         im = Image.frombytes("L", (samples, lines), bytes(pixels))
+        im.save(out_path)
+        return
+
+    # Two-component scientific maps (for example disparity/vector products)
+    # are represented as a false-colour preview: component 1 in red,
+    # component 2 in green, and their average in blue.
+    if bands == 2:
+        first = _normalize_channel(band_data[0])
+        second = _normalize_channel(band_data[1])
+        rgb = bytearray()
+        for i in range(lines * samples):
+            rgb.extend([first[i], second[i], (first[i] + second[i]) // 2])
+        im = Image.frombytes("RGB", (samples, lines), bytes(rgb))
         im.save(out_path)
         return
 
     # For RGB-like 3 bands, normalize each band independently to 0..255.
     if bands >= 3:
         r, g, b = band_data[0], band_data[1], band_data[2]
-        def norm(ch: list[int]) -> list[int]:
-            mn = min(ch) if ch else 0
-            mx = max(ch) if ch else 1
-            scale = 255.0 / float(mx - mn) if mx != mn else 1.0
-            return [max(0, min(255, int((v - mn) * scale))) for v in ch]
-
-        rn, gn, bn = norm(r), norm(g), norm(b)
+        rn, gn, bn = _normalize_channel(r), _normalize_channel(g), _normalize_channel(b)
         rgb = bytearray()
         for i in range(lines * samples):
             rgb.extend([rn[i], gn[i], bn[i]])

@@ -1,3 +1,5 @@
+"""PDS catalog boundary helpers: max known Sol, known-missing Sols, and PDS/RAW source routing."""
+
 from __future__ import annotations
 
 from typing import Any, Callable, Optional
@@ -6,6 +8,8 @@ import pandas as pd
 
 
 class CatalogSelectionService:
+    """Answers "how far does the PDS catalog actually go" questions and splits a selection by source (PDS vs RAW)."""
+
     def __init__(
         self,
         *,
@@ -18,6 +22,7 @@ class CatalogSelectionService:
         self._resolve_pds_missing_sols = resolve_pds_missing_sols
 
     def get_pds_max_sol(self, state: dict[str, Any]) -> Optional[int]:
+        """Return the highest Sol present in the PDS catalog (cached per session), or None if it can't be determined."""
         cached = state.get("_pds_max_sol_cached")
         try:
             if cached is not None:
@@ -45,6 +50,7 @@ class CatalogSelectionService:
         return max_sol
 
     def get_pds_missing_sols(self, state: dict[str, Any]) -> set[int]:
+        """Return the set of Sols known to have no PDS data at all, from config's `pds_missing_sols.json` (explicit list and/or "a..b" ranges), cached per session."""
         cached = state.get("_pds_missing_sols_cached")
         if isinstance(cached, set):
             return {int(v) for v in cached}
@@ -89,6 +95,7 @@ class CatalogSelectionService:
         return missing
 
     def route_selection_by_catalog_boundary(self, state: dict[str, Any], df: pd.DataFrame) -> pd.DataFrame:
+        """Restrict `df` to PDS-only, RAW-only, both, or neither rows per `state["filters"]`'s source_pds/source_raw flags."""
         if not isinstance(df, pd.DataFrame) or len(df) == 0:
             return df
         if "source" not in df.columns or "sol" not in df.columns:

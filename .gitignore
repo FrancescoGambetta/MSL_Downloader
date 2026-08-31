@@ -10,18 +10,50 @@ __pycache__/
 cache/
 data/sessions/
 tmp/
+/logs/
 
 # Generated catalogs (local artifacts)
 catalog.json
 catalog.parquet
 data/catalog/catalog.json
 data/catalog/catalog.parquet
+data/catalog/Catalog_PDS.json
 data/catalog/Catalog_PDS_1.json
 data/catalog/Catalog_PDS_2.json
 data/catalog/Catalog_RawArch.json
+data/catalog/chemcam_catalog.json
+data/catalog/chemcam_raw_catalog.json
+data/catalog/chemcam_catalog.json.state.json
+data/catalog/chemcam_raw_catalog.json.state.json
 backup/data/catalog/
 .push_export/
 .claude/
+
+# Catalog data itself is not versioned in git: it's downloaded from the
+# official Google-Drive release at first launch (see catalog_manager/distribution.py).
+# Keeps the repo light and the catalog install path the single source of truth.
+data/catalog/Catalog_PDS.parquet
+data/catalog/Catalog_RawArch.parquet
+data/catalog/chemcam_catalog.parquet
+data/catalog/chemcam_raw_catalog.parquet
+data/catalog/Catalog_PDS.manifest.json
+data/catalog/Catalog_RawArch.manifest.json
+
+# Catalog Manager local runtime state (regenerated at each run; contains
+# machine-specific absolute paths -- must never be committed)
+data/catalog/catalog_manager_state.json
+data/catalog/catalog_status_report.json
+data/catalog/catalog_manager_bootstrap.json
+
+# Catalog Manager job state / safety backups (local, regenerated at runtime)
+data/catalog/jobs/
+data/catalog/backups/
+
+# Download output folder (user data, not source)
+output/
+
+# Legacy Streamlit example assets (large, not needed to run the app)
+catalog_manager/assets/pds_product_examples/
 
 # Virtualenv / Conda / tooling caches
 .venv/

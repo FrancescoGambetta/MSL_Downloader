@@ -1,3 +1,12 @@
+"""Runs the unified PDS catalog builder as a subprocess and streams its stdout as events, for dashboards that want to trigger an update from UI controls.
+
+NOTE: as of this cleanup pass, the only caller left in the repo is
+`app/utils/app_bootstrap.py` (itself apparently orphaned -- not launched by
+anything). Catalog Manager's real update/repair jobs (`catalog_manager/jobs.py`)
+use their own, more complete subprocess+job-state-file mechanism instead of
+this module.
+"""
+
 from __future__ import annotations
 
 import subprocess
@@ -12,6 +21,8 @@ EventCallback = Callable[[dict[str, Any]], None]
 
 @dataclass
 class CatalogUpdateOptions:
+    """CLI options for `core/make_msl_pds_catalog.py`, translated to argv by `build_catalog_update_command`."""
+
     config_path: str | Path
     cameras: Optional[list[str]] = None
     sol_start: Optional[int] = None
@@ -26,6 +37,7 @@ class CatalogUpdateOptions:
 
 
 def _emit(cb: Optional[EventCallback], stage: str, message: str, **payload: Any) -> None:
+    """Call `cb({"stage": stage, "message": message, **payload})` if a callback was given."""
     if cb is None:
         return
     cb({"stage": stage, "message": message, **payload})
@@ -37,6 +49,7 @@ def build_catalog_update_command(
     options: CatalogUpdateOptions,
     python_executable: Optional[str] = None,
 ) -> list[str]:
+    """Translate `options` into the argv list for running `script_path` (make_msl_pds_catalog.py) as a subprocess."""
     cmd: list[str] = [python_executable or sys.executable, str(Path(script_path).resolve())]
     cmd += ["--config", str(Path(options.config_path).expanduser())]
 
@@ -72,15 +85,15 @@ def run_catalog_update(
     python_executable: Optional[str] = None,
 ) -> dict[str, Any]:
     """
-    Run `make_msl_catalog.py` as a subprocess and stream stdout lines as events.
+    Run the unified PDS builder as a subprocess and stream stdout lines as events.
 
     Designed to be called from dashboards so catalog update can be triggered
     from UI controls without duplicating CLI logic.
     """
     root = Path(project_root).expanduser().resolve()
-    script_path = root / "core" / "make_msl_catalog.py"
+    script_path = root / "core" / "make_msl_pds_catalog.py"
     if not script_path.exists():
-        raise FileNotFoundError(f"core/make_msl_catalog.py not found in: {root}")
+        raise FileNotFoundError(f"core/make_msl_pds_catalog.py not found in: {root}")
 
     cmd = build_catalog_update_command(
         script_path=script_path,

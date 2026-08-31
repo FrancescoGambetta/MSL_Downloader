@@ -1,7 +1,8 @@
+"""UI helpers: the login page and small HTML-rendering utilities for the metadata panel / hero logo."""
+
 from __future__ import annotations
 
 import json
-import re
 from html import escape
 from pathlib import Path
 from typing import Any, Callable
@@ -12,7 +13,6 @@ import streamlit as st
 import sys
 sys.path.append(str(Path(__file__).resolve().parent))
 from Styles.themes import get_theme
-from actions import _load_selected_image_outputs, set_download_path
 from session import _append_user_action, _get_latest_session_info, _normalize_user_name, _resume_user_session, _start_user_session
 from runtime import normalize_text
 
@@ -25,6 +25,7 @@ def set_translator(fn: Callable[..., str]) -> None:
 
 
 def t(key: str, **kwargs: Any) -> str:
+    """Translate `key` via whatever function `set_translator()` last installed (set from `app.py`)."""
     try:
         return _T(key, **kwargs)
     except Exception:
@@ -32,6 +33,7 @@ def t(key: str, **kwargs: Any) -> str:
 
 
 def _hero_logo_html(mode: str, theme_name: str) -> str:
+    """Load Title.svg from the project root and recolor it to match the active theme's accent/text colors, or "" if the file is missing."""
     title_path = Path(__file__).resolve().parent.parent / "Title.svg"
     if not title_path.exists():
         return ""
@@ -46,31 +48,8 @@ def _hero_logo_html(mode: str, theme_name: str) -> str:
     return f'<div class="hero-logo">{svg}</div>'
 
 
-def _format_msg_text_as_html(text: str) -> str:
-    raw = normalize_text(text)
-    if not raw:
-        return f"<div class='msg-text'>{escape(t('empty_label'))}</div>"
-    return f"<div class='msg-text'>{escape(raw)}</div>"
-
-
-def _render_chat_history_html(history: list[dict[str, Any]]) -> str:
-    lines: list[str] = []
-    for msg in history:
-        role = normalize_text(msg.get("role"))
-        if role != "ai":
-            continue
-        source = normalize_text(msg.get("source"))
-        hide_source = source in {"parser", "parser_humanized"}
-        header = "" if hide_source else (f"[{source}] " if source else "")
-        text = normalize_text(msg.get("text"))
-        lines.append(f"{header}{text}")
-    if not lines:
-        return f"<div class='msg-text is-idle'>{escape(t('ai_response_waiting'))}</div>"
-    plain = "\n\n".join(lines)
-    return f"<div class='msg-text'>{escape(plain)}</div>"
-
-
 def _meta_line_html(label: str, value: Any, path_like: bool = False) -> str:
+    """Render one `label: value` row for the metadata panel; long path-like values get a hover tooltip with the full text."""
     key_html = escape(str(label))
     if value is None:
         value_html = "<span class='meta-value'>(null)</span>"
@@ -85,6 +64,7 @@ def _meta_line_html(label: str, value: Any, path_like: bool = False) -> str:
 
 
 def _render_login_page() -> None:
+    """Render the name-entry login screen, including the "session found -- resume/new/change username" branch."""
     from session import _get_latest_session_info  # local import avoids cycles during bootstrap
 
     is_light_mode = normalize_text(st.session_state.get("mode", "dark")) == "light"
@@ -247,38 +227,3 @@ def _render_login_page() -> None:
                     st.rerun()
 
 
-def _is_preload_done() -> bool:
-    from session import _is_preload_done as _session_preload_done
-
-    return _session_preload_done()
-
-
-def _render_boot_page() -> None:
-    st.markdown(
-        """
-<style>
-.boot-wrap {
-  min-height: 62vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  text-align: center;
-}
-.boot-title {
-  font-size: clamp(1.8rem, 3vw, 2.4rem);
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  margin-bottom: 0.5rem;
-  opacity: 0.95;
-}
-.boot-sub {
-  font-size: 0.9rem;
-  letter-spacing: 0.06em;
-  opacity: 0.72;
-}
-</style>
-""",
-        unsafe_allow_html=True,
-    )
-    st.markdown(f"<div class='boot-wrap'><div class='boot-title'>{escape(t('boot_loading_workspace'))}</div></div>", unsafe_allow_html=True)

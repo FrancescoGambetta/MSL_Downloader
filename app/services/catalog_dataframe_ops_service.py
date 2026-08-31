@@ -1,3 +1,5 @@
+"""Catalog DataFrame cleanup: cross-source deduplication and RAW Archive burst-sequence reduction."""
+
 from __future__ import annotations
 
 from typing import Any, Callable
@@ -6,6 +8,8 @@ import pandas as pd
 
 
 class CatalogDataframeOpsService:
+    """Dedup and burst-reduction operators applied to the combined PDS+RAW catalog DataFrame."""
+
     def __init__(
         self,
         *,
@@ -16,6 +20,7 @@ class CatalogDataframeOpsService:
         self._norm_ascii = norm_ascii
 
     def deduplicate_with_source_priority(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Drop duplicate products (matched by product_id, then image_id, then normalized img_url), keeping the PDS row over the RAW one when both exist."""
         if len(df) == 0:
             return df.copy()
 
@@ -33,6 +38,7 @@ class CatalogDataframeOpsService:
         return out.reset_index(drop=True)
 
     def reduce_raw_burst_sequences(self, df: pd.DataFrame, *, keep_per_group: int = 1) -> pd.DataFrame:
+        """Keep only the first `keep_per_group` RAW Archive rows per (camera, Sol, shot) burst group; PDS rows are untouched."""
         if len(df) == 0 or keep_per_group <= 0:
             return df.copy()
         if "source" not in df.columns:
@@ -58,6 +64,7 @@ class CatalogDataframeOpsService:
         return out.reset_index(drop=True)
 
     def _dedup_key_series(self, df: pd.DataFrame) -> pd.Series:
+        """Build a per-row identity key: product_id if present, else image_id, else a query-string-stripped lowercased img_url, else a row-index fallback so unmatched rows never collide."""
         key = pd.Series([""] * len(df), index=df.index, dtype="object")
 
         if "product_id" in df.columns:
@@ -76,7 +83,7 @@ class CatalogDataframeOpsService:
                 .fillna("")
                 .astype(str)
                 .str.strip()
-                .str.replace(r"\\?.*$", "", regex=True)
+                .str.replace(r"\?.*$", "", regex=True)
                 .str.lower()
             )
             mask = (key == "") & (s != "")
@@ -89,6 +96,7 @@ class CatalogDataframeOpsService:
         return key
 
     def _raw_burst_group_key(self, df: pd.DataFrame) -> pd.Series:
+        """Build a `camera|sol|tail` key grouping filenames that belong to the same RAW burst sequence, from either `_file_name` or `img_url`."""
         if len(df) == 0:
             return pd.Series([], dtype="object")
 

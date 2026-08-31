@@ -1,3 +1,5 @@
+"""The "⟳ LIVE" progress log box, shown below the builder sidebar."""
+
 from __future__ import annotations
 
 from html import escape
@@ -12,6 +14,7 @@ def render_live_log(
     normalize_text: Callable[[Any], str],
     progress_slot: Any,
 ) -> None:
+    """Render the idle-state live log box (or reset it after a run, since `submit_command` already rendered the final state into the same slot)."""
     # If a command just ran, the progress UI was rendered inside `submit_command`.
     # Clear the placeholder here to avoid stacking multiple live containers.
     progress_slot.empty()

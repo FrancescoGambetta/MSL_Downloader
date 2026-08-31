@@ -1,3 +1,11 @@
+"""Native OS folder-picker dialog, invoked from the "..." button next to the download path field.
+
+Streamlit runs server-side with no direct access to a native GUI toolkit,
+so this shells out to the OS's own picker instead: AppleScript's `choose
+folder` on macOS, a WinForms `FolderBrowserDialog` via PowerShell on
+Windows. No dialog is available on other platforms (returns "").
+"""
+
 from __future__ import annotations
 
 import subprocess
