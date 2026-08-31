@@ -8,7 +8,7 @@ const SettingsContext = createContext(null);
 const STORAGE_KEY = 'msl_settings_v3';
 
 const DEFAULTS = {
-  language: 'it',
+  language: 'en',
   palette: 'petrolio-oro',
   mode: 'dark',
   font: 'inter',
