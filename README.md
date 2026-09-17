@@ -1,51 +1,100 @@
 # MSL_Downloader
 
-Streamlit app for building, browsing, filtering, and downloading MSL (Curiosity) image products with a parser-first workflow and optional LLM fallback.
+Local web app to search, filter and download NASA Mars Science Laboratory
+(Curiosity rover) image products, plus a Catalog Manager that builds and keeps
+up to date the local product catalogs it searches (PDS and RAW Archive).
+Includes camera specific decoding/processing (Mastcam Bayer demosaic, MARDI
+geometric correction, ChemCam handling) and a multi language UI (IT, EN, FR,
+ES, DE).
 
 Made during an internship at GET (Géosciences Environnement Toulouse).
 
+## Architecture
+
+- Frontend: React + Vite + Tailwind, in `frontend/`
+- Backend: FastAPI, in `webapi/`
+- Scanning / cataloging engine: `core/`
+- Catalog Manager job orchestration: `catalog_manager/`
+
+This repo also still contains an earlier Streamlit interface (`app/`, and the
+Catalog Manager's own standalone UI in `catalog_manager/app.py`). It is legacy,
+kept for reference only. The supported way to run the app is the React
+frontend talking to the FastAPI backend, described below.
+
 ## Setup
 
-This repo keeps both `requirements.txt` and `environment.yml`, with `requirements.txt` as the single source of truth.
+Python 3.11 to 3.12. `numpy` is pinned below 2.0 to avoid binary
+incompatibilities with `pyarrow` on some systems.
 
-Python: 3.11–3.12 supported. Note that `numpy` is pinned to `<2` to avoid binary incompatibilities with `pyarrow` on some environments.
+### Backend (Python)
 
-### Conda (recommended)
+Conda (recommended):
 
 ```bash
 conda env create -f environment.yml
 conda activate dwnapp
 ```
 
-### Pip
+Pip:
 
 ```bash
 python -m venv .venv
-.\.venv\Scripts\activate
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## Run
-
-### Windows (double-click)
-
-1) First time only: run `Create_env.bat` (creates the Conda env from `environment.yml`)
-2) To start the app: run `Run_App.bat`
-
-### Manual (any OS)
+### Frontend (Node.js 18+)
 
 ```bash
-streamlit run app/app.py
+cd frontend
+npm install
 ```
 
-## Local UI config
+If the project folder lives on a filesystem without symlink support (exFAT,
+FAT32, some network drives), `npm install` fails inside `node_modules/.bin`.
+Run `./Remonta_NodeModules.sh` first (Linux/macOS, needs sudo once per
+boot/mount) to bind mount `frontend/node_modules` onto a real filesystem,
+then retry.
 
-The app reads/writes local UI preferences (theme, language, download path, etc.) in `config/app_ui_config.json`.
+## Run
 
-- This file is **machine-specific** and should not be published.
-- Use `config/app_ui_config.example.json` as a template when setting up a new machine.
+Windows: double click `launchers/Avvia_MSL_App.bat`. It starts the backend
+(port 8000) and the frontend dev server (port 5173) and opens your browser.
 
-## Prepublish smoke test
+Linux/macOS: `launchers/Avvia_MSL_App.sh` (marked BETA). If it does not work
+on your setup, run the two services by hand in two terminals:
+
+```bash
+conda activate dwnapp
+uvicorn webapi.main:app --port 8000
+```
+
+```bash
+cd frontend
+npm run dev
+```
+
+Then open http://localhost:5173.
+
+## First run: catalog data
+
+The PDS and RAW Archive catalogs are not stored in this git repo. On first
+run, use the Catalog Manager's "Download and Install" flow inside the app to
+fetch a prebuilt catalog release instead of scanning NASA/PDS servers from
+scratch.
+
+## Checks
+
+Frontend:
+
+```bash
+cd frontend
+npm run lint
+npm run typecheck
+```
+
+Backend / engine smoke test (currently covers `core/` and the legacy `app/`
+only, not yet `webapi/` or `frontend/`):
 
 ```bash
 python devtools/devtools/prepublish_smoke.py --skip-catalog
@@ -53,7 +102,7 @@ python devtools/devtools/prepublish_smoke.py --skip-catalog
 
 ## Docs
 
-See `docs/README.md` (language guides under `docs/IT`, `docs/EN`, `docs/FR`).
+See `docs/README.md`.
 
 ## License
 

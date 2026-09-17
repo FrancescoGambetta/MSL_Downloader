@@ -1,124 +1,135 @@
-# DWNAPP — Technical Guide (IT)
+# DWNAPP — Guida Tecnica (IT)
 
-Questa guida è per chi vuole capire **come funziona il codice** (architettura, moduli, stato runtime) e dove mettere le mani per estendere o fare refactoring senza rompere l’app.
+Questa guida è per chi vuole capire come funziona il codice (architettura,
+moduli, stato runtime) e dove metter mano per estendere o fare refactoring
+senza rompere l'app.
 
 ## 1) Panoramica architetturale
 
-L’app è una Streamlit app con layering “pratico”:
-- `app/app.py`: entrypoint UI e orchestrazione (rendering + chiamate alle API interne).
-- Facade/API interne (stabili): `app/actions.py`, `app/catalog.py`, `app/runtime.py`, `app/session.py`.
-  - Obiettivo: mantenere import e rerun stabili anche durante refactor.
-- Logica applicativa: `app/services/` (classi e funzioni per responsabilità).
-  - I services sono pensati per essere più testabili/riutilizzabili: quando possibile **non dipendono direttamente** da Streamlit e ricevono `state` (che in runtime è `st.session_state`).
-- Engine/pipeline: `core/` (decoding, processing, pipeline di output).
-- Config: `config/` (paths, intent, regole camera, pipeline catalogo).
-- Dati: `data/` (cataloghi parquet, riferimenti geo, ecc.).
+L'app supportata oggi è un frontend React che parla con un backend FastAPI:
 
-## 2) Entry point e UI
+- `frontend/`: UI (React più Vite più Tailwind). Vedi `frontend/AGENTS.md`
+  per la mappa dei file.
+- `webapi/`: backend FastAPI (`main.py` più i suoi moduli di route/service).
+- `core/`: motore di scansione/catalogazione e di decodifica/processing
+  delle immagini.
+- `catalog_manager/`: orchestrazione dei job che costruiscono e aggiornano
+  i due cataloghi locali (PDS e RAW Archive).
+- `app/`: libreria condivisa di sessione/azioni/runtime, nata per la UI
+  Streamlit originale e oggi importata direttamente anche dal backend
+  (vedi punto 2).
 
-- File principale: `app/app.py`
-- UI “spezzata” in moduli: `app/ui_panels/`
-  - esempio: sidebar/builder, config panel, live log, viewport, metadata.
-- Stili: `app/Styles/` (CSS e temi)
+C'è anche un'interfaccia Streamlit più vecchia (`app/app.py` per il
+Downloader, `catalog_manager/app.py` per il Catalog Manager), legacy,
+tenuta solo come riferimento: il percorso ufficiale per avviare l'app è
+`launchers/Avvia_MSL_App.bat`/`.sh` (backend più frontend), non
+`streamlit run`.
 
-Regola pratica:
-- UI/panels fanno rendering + raccolgono input utente.
-- Le azioni vere (download/process/update) passano sempre da `actions.py` / services.
+## 2) Come app/ diventa parte del backend
 
-## 3) Stato runtime (Streamlit session_state)
+`webapi/main.py` e `webapi/download_service.py` importano direttamente
+`runtime` e `actions` da `app/` (lo stesso modulo che usa la UI Streamlit),
+invece di riscrivere la logica di download/processing da zero. Quindi:
 
-Lo stato vive in `st.session_state` e include tipicamente:
-- dataset corrente e dataframe:
-  - `df`, `df_pds`, `df_raw` (cataloghi caricati)
-  - `df_filtered`, `df_filtered_pds`, `df_filtered_raw` (risultati filtrati)
-- filtri: `filters` (sol range, camere, min size, varianti, token, ecc.)
-- selezione: `selected_df` + id persistiti
-- output: `download_path`, `saved_output_files`, selection store
-- chat/history e live log: `chat_history`, `operation_live_text`, flags di pipeline
+- `app/actions.py`, `app/catalog.py`, `app/runtime.py`, `app/session.py` e
+  `app/services/` sono condivisi tra le due UI e vanno trattati come codice
+  attivo.
+- `app/ui.py`, `app/ui_panels/`, `app/Styles/`, `app/help.py` sono invece
+  specifici della UI Streamlit legacy: il backend non li importa mai.
 
-File chiave:
-- `app/runtime.py`: path, cache, selection store, output index (delegando ai services runtime).
-- `app/session.py`: gestione login/salvataggi sessione, snapshot dello “stato utente”, preload asincrono.
+## 3) Ciclo di una richiesta (esempio: download)
 
-### Persistenza locale
-Per design, questi dati sono locali (non versionati):
-- `cache/` (cache runtime, es. selezioni)
-- `data/sessions/` (sessioni utente locali)
+1. Il frontend (`frontend/src/lib/mslApi.js`) chiama `POST
+   /api/download/start` con i record trovati dalla ricerca e la cartella di
+   destinazione.
+2. `webapi/main.py` valida la richiesta e chiama
+   `webapi/download_service.start_job(...)`.
+3. `download_service.py` lancia un **thread in background** (non un
+   subprocess) che richiama le stesse funzioni di `app/actions.py` usate dal
+   builder Streamlit (decodifica PDS via `core/engine_pipeline.py`, demosaic
+   Bayer Mastcam, correzione geometrica MARDI, gestione ChemCam,
+   organizzazione cartelle in output).
+4. Lo stato del job vive in un dizionario in memoria (`_JOBS`), niente
+   persistenza su riavvio del server: va bene per un uso locale mono utente.
+5. Il frontend fa polling di `GET /api/download/{job_id}` ogni 1 o 2 secondi
+   per log/progresso, e può cancellare con `POST
+   /api/download/{job_id}/cancel` (cancellazione cooperativa, non a metà
+   file).
 
-Nel repo pubblicato restano vuoti con `.gitkeep`.
+## 4) Ciclo di un job del Catalog Manager
 
-## 4) Catalogo: loading, unione e filtri
+Modello diverso da quello dei download: qui i job (aggiornamento catalogo,
+verifica integrità, personalizzazione per camera, ecc.) sono **subprocess
+veri e staccati**, lanciati da `catalog_manager/jobs.py` come script in
+`catalog_manager/workers/`, con stato persistito su file JSON sotto
+`data/catalog/jobs/{active,completed}/`. Sopravvivono a un riavvio del
+frontend e vengono "sanati" automaticamente se il processo muore
+(`_job_is_stale`/`_reap_stale_job` in `jobs.py`). Il frontend li raggiunge
+tramite `webapi/catalog_manager_routes.py` più `catalog_manager_service.py`,
+non direttamente.
 
-Cataloghi principali:
-- `data/catalog/Catalog_PDS.parquet`
-- `data/catalog/Catalog_RawArch.parquet` (opzionale, se presente)
+## 5) Config e path
 
-Logica “catalogo”:
-- Facade: `app/catalog.py`
-- Services principali:
-  - `app/services/catalog_io_service.py` (load/prepare index)
-  - `app/services/catalog_filter_service.py` (logica filtri)
-  - `app/services/catalog_apply_filters_service.py` (apply + cache + selection persistence)
-  - `app/services/catalog_rules_service.py` (camera rules compile/load)
-  - `app/services/catalog_dataframe_ops_service.py` (dedup/ops dataframe)
+File più importanti (immutati rispetto alla versione Streamlit):
 
-Nota: quando sono presenti PDS + RAW, l’app può mantenere anche viste separate e una vista combinata.
-
-## 5) Actions: comandi utente → servizi
-
-- Facade: `app/actions.py`
-  - contiene funzioni “API interne” che la UI chiama
-  - costruisce e cache-a istanze di service (factory `_get_*`)
-  - passa `st.session_state` ai services quando serve
-
-Services tipici coinvolti:
-- `DownloadProcessingService`, `ImageProcessingService` (pipeline download/process)
-- `LocalCommandHandlerService`, `CommandSubmissionService` (interpretazione comando + esecuzione)
-- `CatalogUpdateService` (update catalogo da comando)
-- `SelectionService` (reset/default filtri, selezione, ecc.)
-
-## 6) Sessione e preload
-
-`app/session.py` gestisce:
-- start/resume/end sessione utente
-- snapshot/restore “last_state” (per riaprire l’app come l’ultima volta)
-- preload asincrono dello “stato pesante” (cataloghi + config) tramite:
-  - `app/services/session_preload_service.py`
-  - `app/services/session_store_service.py`
-
-Obiettivo: ridurre tempi percepiti a login/rerun senza cambiare comportamento.
-
-## 7) Config e path
-
-File più importanti:
-- `config/runtime_paths.json`: dove si trovano cataloghi/config/selection store
-- `config/intent_config.json`: keyword/intenti per comandi
+- `config/runtime_paths.json`: dove si trovano cataloghi/config/selection
+  store
+- `config/intent_config.json`: keyword/intenti per comandi (usato dalla UI
+  Streamlit legacy)
 - `config/msl_catalog_config.json`: parametri pipeline catalogo
 - `config/camera_rules.json`: regole camera/varianti
+- `config/app_ui_config.json`: preferenze locali machine specific, letto da
+  `app/runtime.py` (quindi anche dal backend, per i default come la
+  cartella di download); il frontend React tiene le sue preferenze UI
+  (lingua, tema, font) separatamente nel `localStorage` del browser via
+  `AppSettingsContext.jsx`
 
-Regola: i path runtime vanno risolti sempre da `runtime_paths.json` (non hardcodare path assoluti).
+Regola: i path runtime vanno risolti sempre da `runtime_paths.json`, non
+hardcodare path assoluti.
 
-## 8) Devtools
+## 6) Traduzioni (i18n)
 
-- `devtools/devtools/prepublish_smoke.py`: smoke (compile, JSON validity, import principali, sanity config)
+Tre livelli separati:
+
+- `frontend/src/lib/translations.js`: stringhe della UI React (5 lingue)
+- `app/i18n_app.json` più `app/i18n_helper.py`: stringhe backend/log, lette
+  anche da `webapi/i18n_state.py` (stato lingua thread-local, così i
+  messaggi di un job lanciato in francese tornano in francese)
+- `catalog_manager/i18n_catalog.py`: stringhe della UI Streamlit legacy del
+  Catalog Manager, separate dalle altre due
+
+## 7) Devtools
+
+- `devtools/devtools/prepublish_smoke.py`: smoke test (compile, validità
+  JSON, import principali, sanity config). Copre solo `core/` e `app/`
+  legacy: non controlla ancora `webapi/` o `frontend/`.
 - `devtools/tools/`: tool standalone (EXIF, PDS3 IMG→PNG, ecc.)
 
-## 9) Linee guida per modifiche sicure
+## 8) Linee guida per modifiche sicure
 
-1) Cambi piccoli e verificabili: spostare logica nei services mantenendo wrapper in facade.
-2) Non cambiare le chiavi di `st.session_state` senza motivo.
-3) Evitare dipendenze circolari:
-   - preferire `app/app.py` → facade → services
-   - evitare `services -> facade` (se serve, passare callable/injection)
-4) Validare con smoke test:
+1. Cambi piccoli e verificabili: se tocchi `app/actions.py` o
+   `app/runtime.py`, ricorda che sono importati anche da
+   `webapi/download_service.py` e `webapi/main.py`, non solo dalla UI
+   Streamlit legacy.
+2. Evitare dipendenze circolari tra `webapi/` e `app/`: il backend importa
+   da `app/`, non il contrario.
+3. Validare con lo smoke test:
+
 ```bash
 python devtools/devtools/prepublish_smoke.py --skip-catalog
 ```
 
-## 10) Dove iniziare se vuoi contribuire
+4. Per cambi solo nel frontend: `npm run lint` e `npm run typecheck` dentro
+   `frontend/`.
 
-- UI/UX: `app/ui_panels/`
-- Filtri catalogo: `app/services/catalog_*`
-- Pipeline download/process: `app/services/download_processing_service.py`, `app/services/image_processing_service.py`
-- Stato/sessione: `app/runtime.py`, `app/session.py`, `app/services/session_*`
+## 9) Dove iniziare se vuoi contribuire
 
+- UI React: `frontend/src/pages/`, `frontend/src/components/` (vedi
+  `frontend/AGENTS.md`)
+- Backend/API: `webapi/main.py` più i suoi moduli `*_routes.py`/
+  `*_service.py`
+- Pipeline download/process condivisa:
+  `app/services/download_processing_service.py`,
+  `app/services/image_processing_service.py`, `core/engine_pipeline.py`
+- Catalog Manager: `catalog_manager/jobs.py`, `catalog_manager/services.py`,
+  `catalog_manager/workers/`

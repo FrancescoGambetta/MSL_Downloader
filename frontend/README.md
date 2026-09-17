@@ -1,22 +1,26 @@
-# MSL Image Downloader
+# MSL Downloader — Frontend
 
-A local web app to catalog, search and download NASA Mars Science Laboratory
-(Curiosity rover) imagery. It talks directly to the public NASA Mars Photos
-API from the browser — there is no backend server, and everything you save
-is stored locally in your browser.
+React + Vite + Tailwind UI for MSL Downloader: search, filter, download and
+process NASA MSL (Curiosity) imagery, and manage the local PDS/RAW catalogs,
+via the FastAPI backend in `../webapi/`.
 
 ## Prerequisites
 
-- Node.js 18+ and npm
+- Node.js 18+
+- The backend running on http://localhost:8000 (see the project root README;
+  `npm run dev` alone is not enough)
 
-## Run Locally
+## Run
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open the local URL printed by Vite (usually `http://localhost:5173`).
+Open http://localhost:5173, with the backend already running.
+
+If `node_modules` sits on a filesystem without symlink support (exFAT,
+FAT32), run `../Remonta_NodeModules.sh` first.
 
 ## Build
 
@@ -24,12 +28,7 @@ Open the local URL printed by Vite (usually `http://localhost:5173`).
 npm run build
 ```
 
-The production build is written to `./dist` and can be served with any
-static file host:
-
-```bash
-npm run preview
-```
+Output in `./dist`, previewable with `npm run preview`.
 
 ## Checks
 
@@ -40,11 +39,13 @@ npm run typecheck
 
 ## Configuration
 
-Open **Settings** in the app (top right) to set your own NASA API key (get one
-free at https://api.nasa.gov), your preferred output folder label, the
-interface language, colour palette and font. Without a personal key the app
-uses NASA's shared `DEMO_KEY`, which has a very low rate limit — a handful of
-searches per hour, after which the log reports "rate limit reached".
+Open **Settings** in the app for language, theme/palette, font and the
+default download folder. These UI preferences are stored in the browser's
+localStorage; the catalogs, downloads and jobs themselves live on the
+backend and the filesystem, not in the browser.
 
-Every preference, along with the image archive itself, is stored in this
-browser's localStorage.
+## Pages
+
+- `/` Landing
+- `/download` MSL Downloader (search, filter, download)
+- `/catalog-manager` Catalog Manager
