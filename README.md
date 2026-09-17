@@ -1,4 +1,4 @@
-# MSL_Downloader
+# MSL Downloader
 
 Local web app to search, filter and download NASA Mars Science Laboratory
 (Curiosity rover) image products, plus a Catalog Manager that builds and keeps
@@ -15,11 +15,8 @@ Made during an internship at GET (Géosciences Environnement Toulouse).
 - Backend: FastAPI, in `webapi/`
 - Scanning / cataloging engine: `core/`
 - Catalog Manager job orchestration: `catalog_manager/`
-
-This repo also still contains an earlier Streamlit interface (`app/`, and the
-Catalog Manager's own standalone UI in `catalog_manager/app.py`). It is legacy,
-kept for reference only. The supported way to run the app is the React
-frontend talking to the FastAPI backend, described below.
+- Shared backend library, originally built for an earlier Streamlit
+  interface (since removed): `app/`, imported directly by `webapi/`.
 
 ## Setup
 
@@ -42,6 +39,11 @@ python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
+
+Note: `requirements.txt` still lists `streamlit`. There is no Streamlit UI in
+this repo anymore, but `app/actions.py`, `runtime.py`, `session.py` and
+`catalog.py` (reused as a library by `webapi/`) import it directly, so it
+stays a real dependency.
 
 ### Frontend (Node.js 18+)
 
@@ -93,11 +95,11 @@ npm run lint
 npm run typecheck
 ```
 
-Backend / engine smoke test (currently covers `core/` and the legacy `app/`
-only, not yet `webapi/` or `frontend/`):
+Backend / engine smoke test (currently covers `core/` and `app/` only, not
+yet `webapi/` or `frontend/`):
 
 ```bash
-python devtools/devtools/prepublish_smoke.py --skip-catalog
+python devtools/prepublish_smoke.py --skip-catalog
 ```
 
 ## Docs

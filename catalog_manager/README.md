@@ -4,17 +4,13 @@ Builds and maintains the two local catalogs (`Catalog_PDS.parquet`/`.json` and
 `Catalog_RawArch.parquet`/`.json`) that the rest of the app reads from, with
 two sources: **PDS** and **RAW Archive**.
 
-The supported way to use it is through the main app (the React frontend's
-Catalog Manager tabs, calling `webapi/catalog_manager_routes.py` and
-`webapi/catalog_manager_service.py`, which wrap this package). It also has its
-own standalone Streamlit UI (`app.py`, "Make Catalog"), legacy, kept for
-reference: `streamlit run app.py` from this directory.
+This package has no UI of its own: it is used through the main app, via the
+React frontend's Catalog Manager tabs, which call
+`webapi/catalog_manager_routes.py` and `webapi/catalog_manager_service.py`,
+which wrap this package.
 
 ## Main files
 
-- `app.py` (legacy Streamlit UI): dashboard cards, integrity check panels,
-  JSON/official release panels, product composition breakdown, per camera
-  customization UI. See its module docstring for the full picture.
 - `jobs.py`: job orchestration — launches every background operation as a
   detached `workers/` subprocess and tracks its state as a JSON file under
   `data/catalog/jobs/{active,completed}/`.
@@ -34,9 +30,6 @@ reference: `streamlit run app.py` from this directory.
   code breakdown per camera) derived from the local Parquet catalogs.
 - `bootstrap.py`: persists the user's first run choice of whether to also
   generate the local JSON views, or download only.
-- `i18n_catalog.py`: translation strings for the legacy Streamlit UI, merged
-  into `app.py`'s own `TEXT` dict at import time (separate from
-  `app/i18n_app.json` and the frontend's own `translations.js`).
 
 ## `workers/`
 

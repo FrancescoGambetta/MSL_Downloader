@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 APP_DIR = PROJECT_ROOT / "app"
 CORE_DIR = PROJECT_ROOT / "core"
 
@@ -168,7 +168,7 @@ def _check_mastcam_bayer_pipeline() -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="DWNAPP pre-publish smoke checks (no UI).")
+    parser = argparse.ArgumentParser(description="MSL Downloader pre-publish smoke checks (no UI).")
     parser.add_argument("--skip-catalog", action="store_true", help="Skip reading catalog parquet files.")
     args = parser.parse_args()
 

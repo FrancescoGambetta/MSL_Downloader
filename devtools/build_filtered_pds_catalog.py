@@ -27,7 +27,7 @@ from typing import Iterable
 import pandas as pd
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 CATALOG_DIR = ROOT / "data" / "catalog"
 # NOTE: `backup_files/` was a local workspace-only folder and is not part of the published repo.
 ARCHIVE_DIR = ROOT / "data" / "_archive" / "catalog_snapshots" / "pds_legacy_2026-04-27"

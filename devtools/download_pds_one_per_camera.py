@@ -92,7 +92,7 @@ def main() -> None:
         raise SystemExit("No cameras selected or no records found.")
 
     # Process with the same core engine used by the app.
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = Path(__file__).resolve().parents[1]
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
     from core.engine_pipeline import process_products_from_catalog  # type: ignore

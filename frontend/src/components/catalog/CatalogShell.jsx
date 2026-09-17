@@ -1,7 +1,6 @@
 import React from 'react';
 import { LayoutGrid, RefreshCw, ShieldCheck, Layers, SlidersHorizontal } from 'lucide-react';
 import { useAppSettings } from '@/lib/AppSettingsContext';
-import { CATALOG_KINDS } from '@/lib/catalogData';
 import { cn } from '@/lib/utils';
 
 export const TABS = [
@@ -10,6 +9,14 @@ export const TABS = [
   { id: 'verify', icon: ShieldCheck, key: 'cat.tab.verify' },
   { id: 'composition', icon: Layers, key: 'cat.tab.composition' },
   { id: 'custom', icon: SlidersHorizontal, key: 'cat.tab.custom' },
+];
+
+// Which catalogs the Catalog Manager tabs can switch between. Only used here
+// (the picker next to the tabs), so it lives locally instead of a shared
+// data module.
+const CATALOG_KINDS = [
+  { id: 'pds', label: 'PDS' },
+  { id: 'raw', label: 'RAW Archive' },
 ];
 
 // The mockups stacked three bars: header, catalog picker, tabs. That is a lot

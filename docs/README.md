@@ -1,4 +1,4 @@
-# DWNAPP Docs
+# MSL Downloader — Docs
 
 This folder contains the current documentation package for the app, organized by language.
 
@@ -11,11 +11,14 @@ This folder contains the current documentation package for the app, organized by
 
 - Frontend: `frontend/` (React + Vite + Tailwind)
 - Backend: `webapi/` (FastAPI)
-- Shared engine/session library, used by both the backend and the legacy Streamlit app: `app/` (see `docs/APP_STRUCTURE.md`)
+- Shared backend library, originally built for the now-removed Streamlit UI,
+  used only by `webapi/` today: `app/` (see `docs/APP_STRUCTURE.md`)
 - Scanning/cataloging engine: `core/`
 - Catalog Manager orchestration: `catalog_manager/`
 - Shared runtime paths: `config/runtime_paths.json`
-- Local UI config (legacy Streamlit app + shared runtime defaults; machine specific): `config/app_ui_config.json` (template: `config/app_ui_config.example.json`)
+- Local runtime defaults (machine specific, read by `app/runtime.py` and
+  reused by the backend): `config/app_ui_config.json` (template:
+  `config/app_ui_config.example.json`)
 - Catalog pipeline config: `config/msl_catalog_config.json`
 - Catalog outputs (parquet): `data/catalog/Catalog_PDS.parquet` (+ optional `data/catalog/Catalog_RawArch.parquet`)
 - Pre-3000 catalog builder: `core/make_msl_catalog_pre3000.py`

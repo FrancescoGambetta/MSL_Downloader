@@ -1,15 +1,11 @@
 # App structure (EN)
 
-This document maps the project's folders. The supported way to run the app
-is the React frontend talking to the FastAPI backend; an earlier Streamlit
-interface still exists and is described where relevant below.
+This document maps the project's folders.
 
 ## Entry points
 
 - `launchers/Avvia_MSL_App.bat` (Windows) / `.sh` (Linux/macOS, BETA): starts
   the backend (port 8000) and the frontend dev server (port 5173).
-- Legacy: `streamlit run app/app.py` (MSL Downloader UI),
-  `streamlit run catalog_manager/app.py` (Catalog Manager UI).
 
 ## `webapi/` (backend, FastAPI)
 
@@ -34,21 +30,27 @@ See `frontend/AGENTS.md` for the file by file map. In short:
 tabs), `src/lib/mslApi.js` / `catalogManagerApi.js` / `sessionApi.js`
 (backend clients).
 
-## `app/` (shared engine/session library)
+## `app/` (shared backend library)
 
-Originally the Streamlit "MSL Downloader" app; its facade and service
-modules are now also imported directly by `webapi/main.py` and
-`download_service.py`, so this is not dead code even though its own UI is
-legacy.
+This was originally the Streamlit "MSL Downloader" app. Its own UI (`app.py`,
+`ui.py`, `ui_panels/`, `help.py`, `Guida.md`) has been removed now that the
+React frontend replaced it. What remains is imported directly by
+`webapi/main.py`, `download_service.py`, `catalog_service.py` and
+`session_service.py`:
 
-- `actions.py`, `catalog.py`, `runtime.py`, `session.py`: stable facade
-  modules (download/process flows, catalog filters, runtime paths/output
-  indexing, session state).
+- `actions.py`, `catalog.py`, `runtime.py`, `session.py`: facade modules
+  (download/process flows, catalog filters, runtime paths/output indexing,
+  session state defaults).
 - `services/`: the underlying business logic (catalog, download/process,
   session store/preload, etc.).
-- `ui.py`, `ui_panels/`, `Styles/`, `help.py`, `i18n_app.json`/
-  `i18n_helper.py`: Streamlit only UI, used only by the legacy `app.py`
-  interface (the backend imports `runtime`/`actions`, never these).
+- `Styles/themes.py`: theme name constants, still imported by `session.py`
+  for its default theme values — not UI rendering, so it stays.
+- `i18n_app.json` / `i18n_helper.py`: translation strings, read directly by
+  `webapi/i18n_state.py` for backend/log messages.
+
+These modules still do `import streamlit` at the top (left over from the
+Streamlit era), which is why `streamlit` remains a real dependency in
+`requirements.txt` even though there is no Streamlit UI left in the repo.
 
 ## `core/` (processing/engine pipeline)
 
@@ -62,11 +64,10 @@ Camera specific catalog builders (`make_msl_catalog.py`,
 ## `catalog_manager/` (catalog build/maintain orchestration)
 
 See `catalog_manager/README.md`. Its `jobs.py`/`services.py`/`workers/` are
-used both by its own legacy Streamlit UI (`app.py`) and by
-`webapi/catalog_manager_routes.py` for the frontend's Catalog Manager tabs.
-Background jobs here run as detached OS subprocesses with JSON state on disk
-(`data/catalog/jobs/`), unlike `webapi/download_service.py`'s in process
-background threads.
+used by `webapi/catalog_manager_routes.py` for the frontend's Catalog Manager
+tabs. It has no UI of its own. Background jobs here run as detached OS
+subprocesses with JSON state on disk (`data/catalog/jobs/`), unlike
+`webapi/download_service.py`'s in process background threads.
 
 ## Other folders
 
@@ -75,6 +76,7 @@ background threads.
 - `data/`: local catalogs (parquet/JSON) and job state; not versioned in git
   (see `.gitignore`).
 - `devtools/`: developer tools, including the pre publish smoke test
-  (currently checks `core/` and the legacy `app/` only).
+  (`python devtools/prepublish_smoke.py`, currently checks `core/` and
+  `app/` only).
 - `tests/`: Python tests.
 - `docs/`: this documentation package.

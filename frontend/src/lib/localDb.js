@@ -1,8 +1,9 @@
-// Minimal localStorage-backed entity store, replacing the old remote
-// entities API now that there is no backend to persist to. Every "saved" record
-// (downloaded image metadata, etc.) lives in the browser's localStorage.
-// The surface intentionally mirrors what the rest of the app already
-// expects: entity.list(sort, limit) and entity.create(record).
+// Small localStorage-backed entity store for UI-only saved records.
+// The catalogs, downloads and jobs themselves are served by the FastAPI
+// backend (webapi/) -- this store is only for convenience data that never
+// needs to leave the browser (e.g. locally saved image metadata).
+// The surface mirrors what the rest of the app already expects:
+// entity.list(sort, limit) and entity.create(record).
 
 function makeEntityStore(storageKey) {
   function readAll() {

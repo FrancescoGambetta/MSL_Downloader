@@ -35,7 +35,7 @@ def _download(url: str, *, session: requests.Session, timeout: int = 120) -> byt
 
 def _decode_pds(img_bytes: bytes, lbl_text: str) -> np.ndarray:
     # Reuse the engine's decoder to ensure parity with the app.
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = Path(__file__).resolve().parents[1]
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
     from core.engine_pipeline import _decode_pds_image_array  # type: ignore
