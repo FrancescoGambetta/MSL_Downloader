@@ -83,7 +83,7 @@ def raw_record(item: dict[str, Any], sol: int, catalog_url: str) -> tuple[str, d
     name = Path(urlparse(img_url).path).name
     product_id = Path(name).stem
     instrument = str(first(item, "instrument", "instrument_id") or camera.upper())
-    image_time = first(item, "dateTaken", "imageTime", "image_time", "startTime", "start_time")
+    image_time = first(item, "dateTaken", "imageTime", "image_time", "startTime", "start_time", "utc")
     sample_type = first(item, "sampleType", "sample_type")
     record = {
         "product_id": product_id, "sol": int(sol),

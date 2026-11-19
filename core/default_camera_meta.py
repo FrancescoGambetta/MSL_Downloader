@@ -18,8 +18,10 @@ from typing import Any, Optional
 CAMERA_DEFAULTS: dict[str, dict[str, Any]] = {
     # User-provided values (to be validated against reference datasets).
     "navcam": {"focal_length_mm": 14.67, "pixel_size_um": 12.0},
-    "mastcam_left": {"focal_length_mm": 34.0, "pixel_size_um": 12.5},
-    "mastcam_right": {"focal_length_mm": 100.0, "pixel_size_um": 12.5},
+    # Mastcam detector pixel pitch is 7.4 um (Bell et al. 2017). Used only when the
+    # product has no CAHV model to derive the focal length in pixels from.
+    "mastcam_left": {"focal_length_mm": 34.0, "pixel_size_um": 7.4},
+    "mastcam_right": {"focal_length_mm": 100.0, "pixel_size_um": 7.4},
     "hazcam": {"focal_length_mm": 16.0, "pixel_size_um": 12.0},
     "mahli": {"focal_length_mm": 18.0, "pixel_size_um": 12.0},
     "mardi": {"focal_length_mm": 18.0, "pixel_size_um": 12.0},

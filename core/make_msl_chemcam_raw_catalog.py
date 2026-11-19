@@ -93,7 +93,7 @@ def chemcam_record(item: dict[str, Any], sol: int, catalog_url: str) -> dict[str
 
     img_name = Path(urlparse(img_url).path).name
     product_id = Path(img_name).stem
-    image_time = first_text(item, "dateTaken", "imageTime", "image_time", "startTime", "start_time")
+    image_time = first_text(item, "dateTaken", "imageTime", "image_time", "startTime", "start_time", "utc")
     return {
         "product_id": product_id,
         "sol": sol,

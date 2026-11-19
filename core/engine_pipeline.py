@@ -33,7 +33,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - dependency availability check
     piexif = None
 
-from core.default_camera_meta import defaults_for_record
+from core.default_camera_meta import camera_key_from_ids, defaults_for_record
 
 
 # Metashape-friendly fallback camera EXIF when LBL does not expose calibration fields.
@@ -728,6 +728,64 @@ def _lbl_get_float(lbl_text: str, key: str) -> Optional[float]:
         return None
 
 
+def _lbl_cahv_intrinsics(lbl_text: str) -> Optional[dict[str, float]]:
+    """
+    Derives pixel-unit intrinsics from the CAHV geometric camera model in the LBL.
+
+    PDS Mastcam RDR labels carry MODEL_COMPONENT_1..4 = C, A, H, V. With the CAHV
+    convention (Yakimovsky and Cunningham, 1978) the focal length in pixels is
+
+        hs = sqrt(H.H - (H.A)^2)        vs = sqrt(V.V - (V.A)^2)
+
+    and the principal point is hc = H.A, vc = V.A, in the pixel grid of the image
+    as delivered in the product.
+
+    Returns {"hs", "vs", "hc", "vc"}, or None when the model is missing, cannot be
+    parsed, or fails a plausibility check (hs and vs must agree within 2 percent
+    and lie in a physically sensible range). Callers fall back to defaults on None.
+    """
+    comps: dict[int, list[float]] = {}
+    for m in re.finditer(
+        r"(?mi)^\s*MODEL_COMPONENT_([1-4])\s*=\s*\(([^)]*)\)", lbl_text
+    ):
+        idx = int(m.group(1))
+        if idx in comps:
+            continue
+        try:
+            vals = [
+                float(x)
+                for x in m.group(2).replace("\r", " ").replace("\n", " ").split(",")
+                if x.strip()
+            ]
+        except ValueError:
+            return None
+        if len(vals) != 3:
+            return None
+        comps[idx] = vals
+
+    if set(comps) != {1, 2, 3, 4}:
+        return None
+
+    a = np.array(comps[2], dtype=float)
+    h = np.array(comps[3], dtype=float)
+    v = np.array(comps[4], dtype=float)
+    norm = float(np.linalg.norm(a))
+    if not np.isfinite(norm) or norm == 0.0:
+        return None
+    a = a / norm
+
+    hh = float(h @ h - (h @ a) ** 2)
+    vv = float(v @ v - (v @ a) ** 2)
+    if not (np.isfinite(hh) and np.isfinite(vv)) or hh <= 0.0 or vv <= 0.0:
+        return None
+    hs = float(np.sqrt(hh))
+    vs = float(np.sqrt(vv))
+    if not (500.0 < hs < 100000.0) or abs(hs - vs) / hs > 0.02:
+        return None
+
+    return {"hs": hs, "vs": vs, "hc": float(h @ a), "vc": float(v @ a)}
+
+
 def _lbl_get_string(lbl_text: str, key: str) -> Optional[str]:
     """
     Extracts a raw scalar string value from a simple LBL field.
@@ -1276,6 +1334,39 @@ def decode_img_bytes_to_jpg_bytes(
             focal_length_mm = float(defaults.get("focal_length_mm")) if defaults.get("focal_length_mm") is not None else None
         except Exception:
             focal_length_mm = None
+
+    # Focal length in pixels: for Mastcam the LBL has no FOCAL_LENGTH/PIXEL_PITCH,
+    # but it carries the CAHV camera model, which gives the focal length in pixels
+    # directly (per image, so it also follows the focus position). Write the EXIF
+    # focal-plane resolution so that Metashape's own conversion
+    #     f_px = FocalLength[mm] * FocalPlaneResolution[px/cm] / 10
+    # reproduces exactly that value. Camera-scoped constants stay as a fallback.
+    focal_px_source = (
+        "lbl"
+        if focal_plane_x_resolution is not None and focal_plane_y_resolution is not None
+        else None
+    )
+    cahv_hs_px: Optional[float] = None
+    cam_key = None
+    if product is not None:
+        cam_key = camera_key_from_ids(
+            camera=None,
+            instrument_id=str(product.instrument_id or ""),
+            product_id=str(product.product_id or ""),
+        )
+    if (
+        focal_px_source is None
+        and cam_key in ("mastcam_left", "mastcam_right")
+        and focal_length_mm
+        and focal_length_mm > 0
+    ):
+        cahv = _lbl_cahv_intrinsics(lbl_text)
+        if cahv is not None:
+            cahv_hs_px = cahv["hs"]
+            focal_plane_x_resolution = cahv["hs"] / focal_length_mm * 10.0
+            focal_plane_y_resolution = cahv["vs"] / focal_length_mm * 10.0
+            focal_px_source = "cahv"
+
     if focal_plane_x_resolution is None or focal_plane_y_resolution is None:
         px_um = None
         try:
@@ -1295,6 +1386,8 @@ def decode_img_bytes_to_jpg_bytes(
         focal_plane_x_resolution = DEFAULT_FOCAL_PLANE_RESOLUTION
     if focal_plane_y_resolution is None:
         focal_plane_y_resolution = DEFAULT_FOCAL_PLANE_RESOLUTION
+    if focal_px_source is None:
+        focal_px_source = "default"
 
     latitude, longitude, altitude = _extract_gps_fields_from_csv_row(csv_row)
 
@@ -1310,6 +1403,11 @@ def decode_img_bytes_to_jpg_bytes(
 
     if focal_length_in_35mm_film is not None:
         exif_written["FocalLengthIn35mmFilm"] = focal_length_in_35mm_film
+
+    # Provenance of the focal length in pixels (informational, not EXIF tags).
+    exif_written["_FocalPxSource"] = focal_px_source
+    if cahv_hs_px is not None:
+        exif_written["_CahvFocalPx"] = round(cahv_hs_px, 3)
 
     exif_bytes = _build_piexif_bytes_for_metashape(
         focal_length_mm=focal_length_mm,
